@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --ink: #17251f;
+  --muted: #7b8780;
+  --paper: #f3f5f2;
+  --line: #e5e9e4;
+  --green: #173c31;
+  --lime: #c6f36b;
+  --orange: #f2a66c;
+  --blue: #9bc9eb;
+}
+
+@theme inline {
+  --font-sans: "Avenir Next", "Segoe UI Variable", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Avenir Next", "Segoe UI Variable", "Segoe UI", sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  color: var(--green);
+  background: var(--lime);
+}
+
+.dashboard-shell {
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--green);
+}
+
+.scrollbar-hidden {
+  scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.number-font {
+  font-variant-numeric: tabular-nums;
+}
+
+.field-label {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  color: #68766d;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.optional-label {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: #a1aaa3;
+  font-size: 9px;
+  font-weight: 400;
+}
+
+.input-wrap,
+.select-wrap {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  align-items: center;
+  border: 1px solid #e3e8e2;
+  border-radius: 7px;
+  background: #fff;
+  color: #37463d;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.input-wrap:focus-within,
+.select-wrap:focus-within {
+  border-color: #96b872;
+  box-shadow: 0 0 0 3px rgb(137 177 96 / 12%);
+}
+
+.input-wrap input,
+.select-wrap select {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 0 10px;
+  color: #35443a;
+  font-size: 11px;
+  font-weight: 450;
+}
+
+.input-wrap input::placeholder {
+  color: #b0b9b1;
+}
+
+.select-wrap select {
+  appearance: none;
+  padding-right: 30px;
+}
+
+.select-wrap > svg {
+  position: absolute;
+  right: 9px;
+  color: #8d9990;
+  pointer-events: none;
+}
+
+.fade-up {
+  animation: fade-up 420ms ease both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media print {
+  .sidebar,
+  .topbar-actions,
+  .no-print {
+    display: none !important;
+  }
+}
