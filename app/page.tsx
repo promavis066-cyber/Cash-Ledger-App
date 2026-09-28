@@ -1,23 +1,153 @@
 "use client";
 
 import {
-  Activity, ArrowDownLeft, ArrowLeftRight, ArrowRight, ArrowUpRight,
-  CalendarDays, Check, ChevronDown, CircleAlert, CircleCheck, Clock3,
-  FileSpreadsheet, FileText, LayoutDashboard, Landmark, Menu, Plus,
-  Printer, ReceiptText, Search, TrendingUp, WalletCards, X,
+  Activity,
+  ArrowDownLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  ArrowUpRight,
+  CalendarDays,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  CircleCheck,
+  Clock3,
+  FileSpreadsheet,
+  FileText,
+  LayoutDashboard,
+  Landmark,
+  Menu,
+  Pencil,
+  Plus,
+  Printer,
+  ReceiptText,
+  RotateCcw,
+  Search,
+  Trash2,
+  TrendingUp,
+  WalletCards,
+  X,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
-  accounts, computeAccountBalances, computeSystemClosing, emptyLedger,
-  formatMMK, kindLabel, LedgerData, LedgerTransaction, TransactionKind,
-  AccountId, STORAGE_KEY,
+  accountClosingBalances,
+  accountDifference,
+  emptyLedger,
+  formatMMK,
+  kindLabel,
+  LedgerData,
+  LedgerTransaction,
+  TransactionKind,
+  AccountDefinition,
+  AccountId,
+  AccountKind,
+  STORAGE_KEY,
+  normalizeLedger,
 } from "@/lib/ledger";
 
-type ModalKind = "open" | "close" | null;
+type ModalKind = "open" | "close" | "accounts" | "admin" | null;
 type IconComponent = typeof Activity;
+type AdminAction = "reopen" | "date";
+
+const ADMIN_PASSWORD = "admin";
+const accountColorOptions = [
+  {
+    id: "mint",
+    name: "Cash green",
+    swatch: "#c6f36b",
+    badge: "bg-[#e6f4cf] text-[#43712c]",
+  },
+  {
+    id: "sky",
+    name: "KPay blue",
+    swatch: "#64b5f6",
+    badge: "bg-[#dceffd] text-[#27618c]",
+  },
+  {
+    id: "gold",
+    name: "Wave yellow",
+    swatch: "#f2c77d",
+    badge: "bg-[#fff1d6] text-[#9b7530]",
+  },
+  {
+    id: "rose",
+    name: "AYA coral",
+    swatch: "#edaaa7",
+    badge: "bg-[#f8e6e5] text-[#a46060]",
+  },
+  {
+    id: "violet",
+    name: "Violet",
+    swatch: "#b8a6e8",
+    badge: "bg-[#eee9fa] text-[#685293]",
+  },
+  {
+    id: "slate",
+    name: "Slate",
+    swatch: "#a5b1ad",
+    badge: "bg-[#e9edeb] text-[#586660]",
+  },
+];
+
+function accountColorBadge(color: string) {
+  return (
+    accountColorOptions.find((option) => option.id === color)?.badge ??
+    accountColorOptions[0].badge
+  );
+}
+
+function AccountBadge({
+  account,
+  compact = false,
+}: {
+  account: AccountDefinition;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-[6px] ${compact ? "px-1.5 py-0.5 text-[8px]" : "px-2 py-1 text-[9px]"} font-medium ${accountColorBadge(account.color)}`}
+    >
+      <span
+        className="size-1.5 shrink-0 rounded-full"
+        style={{
+          backgroundColor:
+            accountColorOptions.find((option) => option.id === account.color)
+              ?.swatch ?? "#c6f36b",
+        }}
+      />
+      {account.shortName}
+    </span>
+  );
+}
+
+function TransactionChannels({
+  accountList,
+  transaction,
+}: {
+  accountList: AccountDefinition[];
+  transaction: LedgerTransaction;
+}) {
+  const from = accountList.find(
+    (account) => account.id === transaction.fromAccountId,
+  );
+  const to = accountList.find(
+    (account) => account.id === transaction.toAccountId,
+  );
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {from && <AccountBadge account={from} compact />}
+      {to && (
+        <>
+          <span className="text-[#98a39b]">→</span>
+          <AccountBadge account={to} compact />
+        </>
+      )}
+    </span>
+  );
+}
 
 const kindIcons: Record<TransactionKind, IconComponent> = {
   CASH_IN: ArrowDownLeft,
@@ -38,37 +168,98 @@ function getDateKey(date: Date) {
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
     return entities[character];
   });
 }
 
-function formatDate(dateKey: string, options: Intl.DateTimeFormatOptions = { weekday: "long", month: "long", day: "numeric", year: "numeric" }) {
-  return new Intl.DateTimeFormat("en-US", options).format(new Date(`${dateKey}T12:00:00`));
+function formatDate(
+  dateKey: string,
+  options: Intl.DateTimeFormatOptions = {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  },
+) {
+  return new Intl.DateTimeFormat("en-US", options).format(
+    new Date(`${dateKey}T12:00:00`),
+  );
 }
 
-function accountName(id: AccountId | null) {
-  return accounts.find((account) => account.id === id)?.shortName ?? "Cash drawer";
+function accountName(accountList: AccountDefinition[], id: AccountId | null) {
+  return (
+    accountList.find((account) => account.id === id)?.shortName ??
+    "Unknown account"
+  );
 }
 
-function transactionParty(transaction: LedgerTransaction) {
-  if (transaction.kind === "TRANSFER") return `${accountName(transaction.fromAccountId)} → ${accountName(transaction.toAccountId)}`;
-  if (transaction.kind === "CASH_IN") return `${accountName(transaction.fromAccountId)} → Cash drawer`;
-  if (transaction.kind === "CASH_OUT") return `Cash drawer → ${accountName(transaction.toAccountId)}`;
-  return `Paid from ${accountName(transaction.fromAccountId)}`;
+function transactionParty(
+  accountList: AccountDefinition[],
+  transaction: LedgerTransaction,
+) {
+  if (transaction.kind === "TRANSFER")
+    return `${accountName(accountList, transaction.fromAccountId)} → ${accountName(accountList, transaction.toAccountId)}`;
+  if (transaction.kind === "CASH_IN")
+    return `${accountName(accountList, transaction.fromAccountId)} → ${accountName(accountList, transaction.toAccountId)}`;
+  if (transaction.kind === "CASH_OUT")
+    return `${accountName(accountList, transaction.fromAccountId)} → ${accountName(accountList, transaction.toAccountId)}`;
+  return `Paid from ${accountName(accountList, transaction.fromAccountId)}`;
+}
+
+function commissionAccountId(transaction: LedgerTransaction): AccountId {
+  return transaction.commissionAccountId ?? "cash-drawer";
 }
 
 export default function Home() {
   const today = getDateKey(new Date());
+  const [activeDate, setActiveDate] = useState(today);
+  const [unlockedDate, setUnlockedDate] = useState<string | null>(null);
   const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
   const [hydrated, setHydrated] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
-  const [openingInput, setOpeningInput] = useState("");
-  const [closingInput, setClosingInput] = useState("");
-  const [transactionKind, setTransactionKind] = useState<TransactionKind>("CASH_IN");
+  const [adminAction, setAdminAction] = useState<AdminAction>("reopen");
+  const [pendingDate, setPendingDate] = useState(today);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminError, setAdminError] = useState("");
+  const [editingTransactionId, setEditingTransactionId] = useState<
+    string | null
+  >(null);
+  const [transactionKind, setTransactionKind] =
+    useState<TransactionKind>("CASH_IN");
   const [serviceAccountId, setServiceAccountId] = useState<AccountId>("kbzpay");
   const [fromAccountId, setFromAccountId] = useState<AccountId>("kbzpay");
   const [toAccountId, setToAccountId] = useState<AccountId>("wavemoney");
+  const [commissionDestinationId, setCommissionDestinationId] =
+    useState("cash-drawer");
+  const [accountForm, setAccountForm] = useState<
+    Pick<
+      AccountDefinition,
+      "name" | "shortName" | "kind" | "accountNumber" | "color"
+    >
+  >({
+    name: "",
+    shortName: "",
+    kind: "wallet",
+    accountNumber: "",
+    color: "sky",
+  });
+  const [editingAccountId, setEditingAccountId] = useState<AccountId | null>(
+    null,
+  );
+  const [openingAccountIds, setOpeningAccountIds] = useState<AccountId[]>([]);
+  const [openingAmounts, setOpeningAmounts] = useState<
+    Record<AccountId, string>
+  >({});
+  const [closingAmounts, setClosingAmounts] = useState<
+    Record<AccountId, string>
+  >({});
   const [amountInput, setAmountInput] = useState("");
   const [commissionInput, setCommissionInput] = useState("");
   const [customerInput, setCustomerInput] = useState("");
@@ -85,7 +276,7 @@ export default function Home() {
         const savedLedger = window.localStorage.getItem(STORAGE_KEY);
         if (savedLedger) {
           const parsed = JSON.parse(savedLedger) as LedgerData;
-          setLedger({ sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [], transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [] });
+          setLedger(normalizeLedger(parsed));
         }
       } catch {
         setMessage("Saved ledger data could not be read on this device.");
@@ -96,52 +287,299 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (hydrated) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
+    if (hydrated)
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
   }, [hydrated, ledger]);
 
-  const todaySession = ledger.sessions.find((session) => session.date === today) ?? null;
-  const todayTransactions = useMemo(() => ledger.transactions.filter((transaction) => transaction.date === today), [ledger.transactions, today]);
-  const filteredTransactions = useMemo(() => ledger.transactions.filter((transaction) => transaction.date >= dateFrom && transaction.date <= dateTo), [dateFrom, dateTo, ledger.transactions]);
-  const openingBalance = todaySession?.openingBalance ?? 0;
-  const systemClosing = computeSystemClosing(openingBalance, todayTransactions);
-  const commissions = todayTransactions.reduce((total, transaction) => total + transaction.commission, 0);
-  const cashInTotal = todayTransactions.filter((transaction) => transaction.kind === "CASH_IN").reduce((total, transaction) => total + transaction.amount, 0);
-  const cashOutTotal = todayTransactions.filter((transaction) => transaction.kind === "CASH_OUT").reduce((total, transaction) => total + transaction.amount, 0);
-  const expenseTotal = todayTransactions.filter((transaction) => transaction.kind === "EXPENSE").reduce((total, transaction) => total + transaction.amount, 0);
-  const balances = computeAccountBalances(openingBalance, todayTransactions);
-  const isOpen = Boolean(todaySession && todaySession.closedAt === null);
-  const isClosed = Boolean(todaySession?.closedAt);
-  const closingDifference = todaySession?.closingBalance == null ? null : todaySession.closingBalance - systemClosing;
-  const reportStartSession = ledger.sessions.find((session) => session.date === dateFrom);
-  const reportEndSession = ledger.sessions.find((session) => session.date === dateTo);
-  const reportEndTransactions = filteredTransactions.filter((transaction) => transaction.date === dateTo);
-  const reportOpeningBalance = reportStartSession?.openingBalance ?? 0;
-  const reportSystemClosing = computeSystemClosing(reportEndSession?.openingBalance ?? 0, reportEndTransactions);
-  const reportCommissions = filteredTransactions.reduce((total, transaction) => total + transaction.commission, 0);
+  const todaySession =
+    ledger.sessions.find((session) => session.date === activeDate) ?? null;
+  const accounts = ledger.accounts.filter((account) => !account.deletedAt);
+  const todayActiveAccounts = todaySession
+    ? ledger.accounts.filter((account) =>
+        todaySession.activeAccountIds.includes(account.id),
+      )
+    : [];
+  const openingAccounts = todaySession
+    ? ledger.accounts.filter((account) =>
+        todaySession.activeAccountIds.includes(account.id),
+      )
+    : accounts;
+  const todayTransactions = useMemo(
+    () =>
+      ledger.transactions.filter(
+        (transaction) => transaction.date === activeDate,
+      ),
+    [ledger.transactions, activeDate],
+  );
+  const filteredTransactions = useMemo(
+    () =>
+      ledger.transactions.filter(
+        (transaction) =>
+          transaction.date >= dateFrom && transaction.date <= dateTo,
+      ),
+    [dateFrom, dateTo, ledger.transactions],
+  );
+  const openingBalances = todaySession?.accountBalances.opening ?? {};
+  const accountBalances = accountClosingBalances(
+    ledger.accounts,
+    openingBalances,
+    todayTransactions,
+    todaySession?.activeAccountIds ?? [],
+  );
+  const openingBalance = openingBalances["cash-drawer"] ?? 0;
+  const systemClosing =
+    todaySession?.activeAccountIds.reduce(
+      (total, id) => total + (accountBalances[id] ?? 0),
+      0,
+    ) ?? 0;
+  const commissions = todayTransactions.reduce(
+    (total, transaction) => total + transaction.commission,
+    0,
+  );
+  const cashInTotal = todayTransactions
+    .filter((transaction) => transaction.kind === "CASH_IN")
+    .reduce((total, transaction) => total + transaction.amount, 0);
+  const cashOutTotal = todayTransactions
+    .filter((transaction) => transaction.kind === "CASH_OUT")
+    .reduce((total, transaction) => total + transaction.amount, 0);
+  const expenseTotal = todayTransactions
+    .filter((transaction) => transaction.kind === "EXPENSE")
+    .reduce((total, transaction) => total + transaction.amount, 0);
+  const balances = accountBalances;
+  const isUnlocked = unlockedDate === activeDate;
+  const isOpen = Boolean(
+    todaySession && (todaySession.closedAt === null || isUnlocked),
+  );
+  const isClosed = Boolean(todaySession?.closedAt && !isUnlocked);
+  const transactionAccounts = isOpen
+    ? todayActiveAccounts.filter((account) => !account.deletedAt)
+    : accounts;
+  const closingDifference =
+    todaySession?.closingBalance == null
+      ? null
+      : todaySession.closingBalance - systemClosing;
+  const reportSessions = ledger.sessions
+    .filter((session) => session.date >= dateFrom && session.date <= dateTo)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const reportDailyRows = reportSessions.flatMap((session) => {
+    const dayTransactions = filteredTransactions.filter(
+      (transaction) => transaction.date === session.date,
+    );
+    const closing = accountClosingBalances(
+      ledger.accounts,
+      session.accountBalances.opening,
+      dayTransactions,
+      session.activeAccountIds,
+    );
+    return session.activeAccountIds.map((id) => {
+      const incoming = dayTransactions
+        .filter((transaction) => transaction.toAccountId === id)
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+      const outgoing = dayTransactions
+        .filter((transaction) => transaction.fromAccountId === id)
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+      const commission = dayTransactions
+        .filter((transaction) => commissionAccountId(transaction) === id)
+        .reduce((sum, transaction) => sum + transaction.commission, 0);
+      const commissionCredit = dayTransactions
+        .filter((transaction) => commissionAccountId(transaction) === id)
+        .reduce((sum, transaction) => sum + transaction.commission, 0);
+      const system = closing[id] ?? 0;
+      const ground = session.accountBalances.groundClosing[id] ?? null;
+      return {
+        date: session.date,
+        accountId: id,
+        opening: session.accountBalances.opening[id] ?? 0,
+        inflow: incoming + commissionCredit,
+        outflow: outgoing,
+        commission,
+        systemClosing: system,
+        groundClosing: ground,
+        difference: accountDifference(system, ground),
+      };
+    });
+  });
+  const reportAccountIds = new Set(reportDailyRows.map((row) => row.accountId));
+  const reportWalletRows = ledger.accounts
+    .filter((account) => reportAccountIds.has(account.id))
+    .map((account) => {
+      const rows = reportDailyRows.filter(
+        (row) => row.accountId === account.id,
+      );
+      return {
+        account,
+        opening: rows.reduce((sum, row) => sum + row.opening, 0),
+        inflow: rows.reduce((sum, row) => sum + row.inflow, 0),
+        outflow: rows.reduce((sum, row) => sum + row.outflow, 0),
+        commission: rows.reduce((sum, row) => sum + row.commission, 0),
+        net: rows.reduce((sum, row) => sum + row.inflow - row.outflow, 0),
+        closing: rows.at(-1)?.systemClosing ?? 0,
+      };
+    });
+  const reportOpeningBalance = reportDailyRows
+    .filter((row) => row.date === dateFrom)
+    .reduce((total, row) => total + row.opening, 0);
+  const reportSystemClosing = reportDailyRows
+    .filter((row) => row.date === dateTo)
+    .reduce((sum, row) => sum + row.systemClosing, 0);
+  const reportCommissions = filteredTransactions.reduce(
+    (total, transaction) => total + transaction.commission,
+    0,
+  );
 
   function notify(text: string) {
     setMessage(text);
     window.setTimeout(() => setMessage(""), 3500);
   }
 
+  function startOpeningFlow() {
+    const activeIds =
+      todaySession?.activeAccountIds ?? accounts.map((account) => account.id);
+    setOpeningAccountIds(activeIds);
+    setOpeningAmounts(
+      Object.fromEntries(
+        activeIds.map((id) => [
+          id,
+          String(todaySession?.accountBalances.opening[id] ?? 0),
+        ]),
+      ),
+    );
+    setModal("open");
+  }
+
+  function startClosingFlow() {
+    setClosingAmounts(
+      Object.fromEntries(
+        todayActiveAccounts.map((account) => [account.id, ""]),
+      ),
+    );
+    setModal("close");
+  }
+
+  function requestAdminUnlock(action: AdminAction, date = activeDate) {
+    setAdminAction(action);
+    setPendingDate(date);
+    setAdminPassword("");
+    setAdminError("");
+    setModal("admin");
+  }
+
+  function selectSessionDate(date: string) {
+    if (!date || date === activeDate) return;
+    if (date < today) {
+      requestAdminUnlock("date", date);
+      return;
+    }
+    setUnlockedDate(null);
+    setActiveDate(date);
+    setDateFrom(date);
+    setDateTo(date);
+  }
+
+  function confirmAdminUnlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (adminPassword !== ADMIN_PASSWORD) {
+      setAdminError("That admin password is not correct.");
+      return;
+    }
+    const targetDate = adminAction === "date" ? pendingDate : activeDate;
+    setActiveDate(targetDate);
+    setUnlockedDate(targetDate);
+    if (adminAction === "date") {
+      setDateFrom(targetDate);
+      setDateTo(targetDate);
+    }
+    setModal(null);
+    setAdminPassword("");
+    setAdminError("");
+    notify(
+      `Session unlocked for ${formatDate(targetDate, { month: "short", day: "numeric", year: "numeric" })}.`,
+    );
+  }
+
   function openSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const opening = Number(openingInput);
-    if (!Number.isFinite(opening) || opening < 0) return;
-    const newSession = { date: today, openingBalance: opening, closingBalance: null, openedAt: new Date().toISOString(), closedAt: null };
-    setLedger((current) => ({ ...current, sessions: [...current.sessions.filter((session) => session.date !== today), newSession] }));
+    const selectedAccounts = (todaySession ? ledger.accounts : accounts).filter(
+      (account) => openingAccountIds.includes(account.id),
+    );
+    if (!selectedAccounts.length) {
+      notify("Select at least one account for today’s session.");
+      return;
+    }
+    const opening = Object.fromEntries(
+      selectedAccounts.map((account) => [
+        account.id,
+        Number(openingAmounts[account.id] || 0),
+      ]),
+    );
+    if (
+      selectedAccounts.some(
+        (account) =>
+          !Number.isFinite(opening[account.id]) || opening[account.id] < 0,
+      )
+    )
+      return;
+    const newSession = {
+      date: activeDate,
+      activeAccountIds: selectedAccounts.map((account) => account.id),
+      accountBalances: {
+        opening,
+        groundClosing: Object.fromEntries(
+          selectedAccounts.map((account) => [account.id, null]),
+        ),
+      },
+      openingBalance: opening["cash-drawer"] ?? 0,
+      closingBalance: null,
+      openedAt: todaySession?.openedAt ?? new Date().toISOString(),
+      closedAt: null,
+    };
+    setLedger((current) => ({
+      ...current,
+      sessions: [
+        ...current.sessions.filter((session) => session.date !== activeDate),
+        newSession,
+      ],
+    }));
     setModal(null);
-    setOpeningInput("");
     notify("Morning session opened. Opening balance recorded.");
   }
 
   function closeSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const actual = Number(closingInput);
-    if (!todaySession || !Number.isFinite(actual) || actual < 0) return;
-    setLedger((current) => ({ ...current, sessions: current.sessions.map((session) => session.date === today ? { ...session, closingBalance: actual, closedAt: new Date().toISOString() } : session) }));
+    if (!todaySession || !isOpen) return;
+    const groundClosing = Object.fromEntries(
+      todayActiveAccounts.map((account) => [
+        account.id,
+        Number(closingAmounts[account.id] || 0),
+      ]),
+    );
+    if (
+      todayActiveAccounts.some(
+        (account) =>
+          !Number.isFinite(groundClosing[account.id]) ||
+          groundClosing[account.id] < 0,
+      )
+    )
+      return;
+    const totalGround = Object.values(groundClosing).reduce(
+      (total, amount) => total + Number(amount),
+      0,
+    );
+    setLedger((current) => ({
+      ...current,
+      sessions: current.sessions.map((session) =>
+        session.date === activeDate
+          ? {
+              ...session,
+              accountBalances: { ...session.accountBalances, groundClosing },
+              closingBalance: totalGround,
+              closedAt: new Date().toISOString(),
+            }
+          : session,
+      ),
+    }));
+    setUnlockedDate(null);
     setModal(null);
-    setClosingInput("");
     notify("Session closed. Reconciliation is ready.");
   }
 
@@ -150,62 +588,418 @@ export default function Home() {
     const amount = Number(amountInput);
     const commission = Number(commissionInput || 0);
     if (!isOpen) {
-      notify("Open today’s session before recording transactions.");
+      notify("Open or unlock this session before recording transactions.");
       return;
     }
-    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(commission) || commission < 0) return;
+    if (
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
+      !Number.isFinite(commission) ||
+      commission < 0
+    )
+      return;
     if (transactionKind === "TRANSFER" && fromAccountId === toAccountId) {
       notify("Choose two different accounts for a transfer.");
       return;
     }
+    const activeIds = new Set(todaySession?.activeAccountIds ?? []);
+    const selectedSource =
+      transactionKind === "CASH_IN"
+        ? serviceAccountId
+        : transactionKind === "CASH_OUT" || transactionKind === "EXPENSE"
+          ? "cash-drawer"
+          : fromAccountId;
+    const selectedDestination =
+      transactionKind === "CASH_IN"
+        ? "cash-drawer"
+        : transactionKind === "CASH_OUT"
+          ? serviceAccountId
+          : transactionKind === "TRANSFER"
+            ? toAccountId
+            : null;
+    if (
+      !activeIds.has(selectedSource) ||
+      (selectedDestination && !activeIds.has(selectedDestination))
+    ) {
+      notify("Choose accounts that are active in today’s session.");
+      return;
+    }
     const isCashIn = transactionKind === "CASH_IN";
     const isCashOut = transactionKind === "CASH_OUT";
-    const source: AccountId = isCashIn ? serviceAccountId : isCashOut || transactionKind === "EXPENSE" ? "cash-drawer" : fromAccountId;
-    const destination: AccountId | null = isCashIn ? "cash-drawer" : isCashOut ? serviceAccountId : transactionKind === "TRANSFER" ? toAccountId : null;
+    const source: AccountId = isCashIn
+      ? serviceAccountId
+      : isCashOut || transactionKind === "EXPENSE"
+        ? "cash-drawer"
+        : fromAccountId;
+    const destination: AccountId | null = isCashIn
+      ? "cash-drawer"
+      : isCashOut
+        ? serviceAccountId
+        : transactionKind === "TRANSFER"
+          ? toAccountId
+          : null;
+    const commissionDestination =
+      commissionDestinationId === "related"
+        ? transactionKind === "CASH_IN"
+          ? source
+          : transactionKind === "CASH_OUT" || transactionKind === "TRANSFER"
+            ? (destination ?? source)
+            : "cash-drawer"
+        : commissionDestinationId;
+    if (commission > 0 && !activeIds.has(commissionDestination)) {
+      notify("Choose an active account to receive the commission.");
+      return;
+    }
     const now = new Date();
+    const existingTransaction = editingTransactionId
+      ? ledger.transactions.find((item) => item.id === editingTransactionId)
+      : undefined;
     const transaction: LedgerTransaction = {
-      id: crypto.randomUUID(), date: today,
-      time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-      kind: transactionKind, customer: customerInput.trim(), phone: phoneInput.trim(), amount,
-      commission: transactionKind === "EXPENSE" ? 0 : commission,
-      note: noteInput.trim(), fromAccountId: source, toAccountId: destination,
+      id: crypto.randomUUID(),
+      date: activeDate,
+      time:
+        existingTransaction?.time ??
+        now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+      kind: transactionKind,
+      customer: customerInput.trim(),
+      phone: phoneInput.trim(),
+      amount,
+      commission,
+      commissionAccountId: commissionDestination,
+      note: noteInput.trim(),
+      fromAccountId: source,
+      toAccountId: destination,
     };
-    setLedger((current) => ({ ...current, transactions: [transaction, ...current.transactions] }));
-    setAmountInput(""); setCommissionInput(""); setCustomerInput(""); setPhoneInput(""); setNoteInput("");
-    notify(`${kindLabel(transactionKind)} recorded.`);
+    setLedger((current) => ({
+      ...current,
+      transactions: editingTransactionId
+        ? current.transactions.map((item) =>
+            item.id === editingTransactionId
+              ? { ...transaction, id: editingTransactionId }
+              : item,
+          )
+        : [transaction, ...current.transactions],
+    }));
+    setEditingTransactionId(null);
+    setAmountInput("");
+    setCommissionInput("");
+    setCustomerInput("");
+    setPhoneInput("");
+    setNoteInput("");
+    notify(
+      editingTransactionId
+        ? "Transaction updated."
+        : `${kindLabel(transactionKind)} recorded.`,
+    );
+  }
+
+  function editTransaction(transaction: LedgerTransaction) {
+    setEditingTransactionId(transaction.id);
+    setTransactionKind(transaction.kind);
+    setAmountInput(String(transaction.amount));
+    setCommissionInput(String(transaction.commission));
+    setCommissionDestinationId(
+      transaction.commissionAccountId ?? "cash-drawer",
+    );
+    setCustomerInput(transaction.customer);
+    setPhoneInput(transaction.phone);
+    setNoteInput(transaction.note);
+    if (transaction.kind === "CASH_IN")
+      setServiceAccountId(transaction.fromAccountId);
+    if (transaction.kind === "CASH_OUT")
+      setServiceAccountId(transaction.toAccountId ?? "cash-drawer");
+    if (transaction.kind === "TRANSFER") {
+      setFromAccountId(transaction.fromAccountId);
+      setToAccountId(transaction.toAccountId ?? transaction.fromAccountId);
+    }
+    setTimeout(
+      () =>
+        document
+          .getElementById("transaction-entry")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      0,
+    );
   }
 
   function removeTransaction(id: string) {
-    setLedger((current) => ({ ...current, transactions: current.transactions.filter((transaction) => transaction.id !== id) }));
+    setLedger((current) => ({
+      ...current,
+      transactions: current.transactions.filter(
+        (transaction) => transaction.id !== id,
+      ),
+    }));
+    if (editingTransactionId === id) setEditingTransactionId(null);
     notify("Transaction removed from this device.");
   }
 
+  function submitAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = accountForm.name.trim();
+    if (!name) return;
+    const shortName = accountForm.shortName.trim() || name;
+    if (editingAccountId) {
+      setLedger((current) => ({
+        ...current,
+        accounts: current.accounts.map((account) =>
+          account.id === editingAccountId
+            ? {
+                ...account,
+                name,
+                shortName,
+                kind: accountForm.kind,
+                accountNumber: accountForm.accountNumber.trim(),
+                color: accountForm.color,
+                mark: name.slice(0, 1).toUpperCase(),
+              }
+            : account,
+        ),
+      }));
+      notify("Account details updated.");
+    } else {
+      const id = `account-${crypto.randomUUID()}`;
+      const colors = ["sky", "gold", "rose", "mint"];
+      setLedger((current) => ({
+        ...current,
+        accounts: [
+          ...current.accounts,
+          {
+            id,
+            name,
+            shortName,
+            kind: accountForm.kind,
+            accountNumber: accountForm.accountNumber.trim(),
+            color:
+              accountForm.color ||
+              colors[current.accounts.length % colors.length],
+            mark: name.slice(0, 1).toUpperCase(),
+          },
+        ],
+      }));
+      notify("Account added.");
+    }
+    setEditingAccountId(null);
+    setAccountForm({
+      name: "",
+      shortName: "",
+      kind: "wallet",
+      accountNumber: "",
+      color: "sky",
+    });
+  }
+
+  function editAccount(account: AccountDefinition) {
+    setEditingAccountId(account.id);
+    setAccountForm({
+      name: account.name,
+      shortName: account.shortName,
+      kind: account.kind,
+      accountNumber: account.accountNumber,
+      color: account.color,
+    });
+  }
+
+  function deleteAccount(account: AccountDefinition) {
+    if (account.id === "cash-drawer") {
+      notify("Cash drawer is required and cannot be deleted.");
+      return;
+    }
+    const inUse =
+      ledger.sessions.some((session) =>
+        session.activeAccountIds.includes(account.id),
+      ) ||
+      ledger.transactions.some(
+        (transaction) =>
+          transaction.fromAccountId === account.id ||
+          transaction.toAccountId === account.id,
+      );
+    if (inUse) {
+      setLedger((current) => ({
+        ...current,
+        accounts: current.accounts.map((item) =>
+          item.id === account.id
+            ? { ...item, deletedAt: new Date().toISOString() }
+            : item,
+        ),
+      }));
+      notify(
+        "Account archived. Historical sessions and reports are preserved.",
+      );
+    } else {
+      setLedger((current) => ({
+        ...current,
+        accounts: current.accounts.filter((item) => item.id !== account.id),
+      }));
+      notify("Account deleted.");
+    }
+    if (editingAccountId === account.id) setEditingAccountId(null);
+  }
+
+  function restoreAccount(accountId: AccountId) {
+    setLedger((current) => ({
+      ...current,
+      accounts: current.accounts.map((account) =>
+        account.id === accountId ? { ...account, deletedAt: null } : account,
+      ),
+    }));
+    notify("Account restored for future sessions.");
+  }
+
   function exportExcel() {
-    const rows = filteredTransactions.map((transaction) => ({
-      Date: transaction.date, Time: transaction.time, Type: kindLabel(transaction.kind),
-      Customer: transaction.customer || "-", Phone: transaction.phone || "-",
-      Account: transactionParty(transaction), Amount_MMK: transaction.amount,
-      Commission_MMK: transaction.commission, Note: transaction.note || "-",
+    const transactions = filteredTransactions.map((transaction) => ({
+      Date: transaction.date,
+      Time: transaction.time,
+      Type: kindLabel(transaction.kind),
+      Customer: transaction.customer || "-",
+      Phone: transaction.phone || "-",
+      Channel_or_Wallet: transactionParty(ledger.accounts, transaction),
+      Amount_MMK: transaction.amount,
+      Commission_MMK: transaction.commission,
+      Commission_Received_In: accountName(
+        ledger.accounts,
+        commissionAccountId(transaction),
+      ),
+      Note: transaction.note || "-",
     }));
     const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Note: "No transactions in selected date range" }]);
-    XLSX.utils.book_append_sheet(workbook, sheet, "Transactions");
+    const sessions = reportDailyRows.map((row) => ({
+      Date: row.date,
+      Wallet: accountName(ledger.accounts, row.accountId),
+      Opening_MMK: row.opening,
+      Inflow_MMK: row.inflow,
+      Outflow_MMK: row.outflow,
+      System_Closing_MMK: row.systemClosing,
+      Ground_Closing_MMK: row.groundClosing ?? "",
+      Difference_MMK: row.difference ?? "",
+    }));
+    const wallets = reportWalletRows.map((row) => ({
+      Wallet: row.account.name,
+      Net_Volume_MMK: row.net,
+      Inflow_MMK: row.inflow,
+      Outflow_MMK: row.outflow,
+      Commission_MMK: row.commission,
+      Latest_System_Closing_MMK: row.closing,
+    }));
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(sessions),
+      "Daily sessions",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(wallets),
+      "Wallet summary",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        transactions.length
+          ? transactions
+          : [{ Note: "No transactions in selected date range" }],
+      ),
+      "Transactions",
+    );
     XLSX.writeFile(workbook, `ledger-${dateFrom}-to-${dateTo}.xlsx`);
   }
 
   function exportPdf() {
-    const document = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    document.setFont("helvetica", "bold"); document.setFontSize(19); document.text("Daily cash ledger", 16, 19);
-    document.setFont("helvetica", "normal"); document.setFontSize(10);
+    const document = new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: "a4",
+    });
+    document.setFont("helvetica", "bold");
+    document.setFontSize(19);
+    document.text("Daily cash ledger", 16, 19);
+    document.setFont("helvetica", "normal");
+    document.setFontSize(10);
     document.text(`Statement period: ${dateFrom} to ${dateTo}`, 16, 27);
-    document.text(`Start-day opening: MMK ${formatMMK(reportOpeningBalance)}`, 16, 34);
-    document.text(`End-day system close: MMK ${formatMMK(reportSystemClosing)}`, 16, 41);
-    document.text(`Commissions in period: MMK ${formatMMK(reportCommissions)}`, 16, 48);
+    document.text(
+      `Start-day opening: MMK ${formatMMK(reportOpeningBalance)}`,
+      16,
+      34,
+    );
+    document.text(
+      `End-day system close: MMK ${formatMMK(reportSystemClosing)}`,
+      16,
+      41,
+    );
+    document.text(
+      `Commissions in period: MMK ${formatMMK(reportCommissions)}`,
+      16,
+      48,
+    );
     autoTable(document, {
       startY: 56,
-      head: [["Time", "Type", "Customer / account", "Amount (MMK)", "Fee"]],
-      body: filteredTransactions.map((transaction) => [transaction.time, kindLabel(transaction.kind), transaction.customer || transactionParty(transaction), formatMMK(transaction.amount), formatMMK(transaction.commission)]),
-      styles: { fontSize: 8, cellPadding: 2.5 }, headStyles: { fillColor: [23, 60, 49] }, margin: { left: 16, right: 16 },
+      head: [
+        [
+          "Date",
+          "Wallet",
+          "Opening",
+          "Inflow",
+          "Outflow",
+          "System",
+          "Ground",
+          "Diff.",
+        ],
+      ],
+      body: reportDailyRows.map((row) => [
+        row.date,
+        accountName(ledger.accounts, row.accountId),
+        formatMMK(row.opening),
+        formatMMK(row.inflow),
+        formatMMK(row.outflow),
+        formatMMK(row.systemClosing),
+        row.groundClosing == null ? "-" : formatMMK(row.groundClosing),
+        row.difference == null ? "-" : formatMMK(row.difference),
+      ]),
+      styles: { fontSize: 6.5, cellPadding: 1.8 },
+      headStyles: { fillColor: [23, 60, 49] },
+      margin: { left: 10, right: 10 },
+    });
+    const tableDocument = document as jsPDF & {
+      lastAutoTable?: { finalY: number };
+    };
+    autoTable(document, {
+      startY: (tableDocument.lastAutoTable?.finalY ?? 56) + 7,
+      head: [["Wallet", "Net volume", "Inflow", "Outflow", "Commission"]],
+      body: reportWalletRows.map((row) => [
+        row.account.name,
+        formatMMK(row.net),
+        formatMMK(row.inflow),
+        formatMMK(row.outflow),
+        formatMMK(row.commission),
+      ]),
+      styles: { fontSize: 7, cellPadding: 2 },
+      headStyles: { fillColor: [60, 91, 65] },
+      margin: { left: 12, right: 12 },
+    });
+    autoTable(document, {
+      startY: (tableDocument.lastAutoTable?.finalY ?? 56) + 7,
+      head: [
+        [
+          "Date",
+          "Time",
+          "Type",
+          "Customer",
+          "Channel / wallet",
+          "Amount",
+          "Fee",
+          "Fee deposited in",
+        ],
+      ],
+      body: filteredTransactions.map((transaction) => [
+        transaction.date,
+        transaction.time,
+        kindLabel(transaction.kind),
+        transaction.customer || "Walk-in",
+        transactionParty(ledger.accounts, transaction),
+        formatMMK(transaction.amount),
+        formatMMK(transaction.commission),
+        accountName(ledger.accounts, commissionAccountId(transaction)),
+      ]),
+      styles: { fontSize: 6.5, cellPadding: 1.8 },
+      headStyles: { fillColor: [23, 60, 49] },
+      margin: { left: 10, right: 10 },
     });
     document.save(`ledger-summary-${dateFrom}-to-${dateTo}.pdf`);
   }
@@ -216,102 +1010,1862 @@ export default function Home() {
       notify("Allow pop-ups to print the 80 mm slip.");
       return;
     }
-    const rows = filteredTransactions.map((transaction) => `
+    const sessionRows = reportDailyRows
+      .map(
+        (row) =>
+          `<tr><td colspan="2" class="item">${escapeHtml(row.date)} · ${escapeHtml(accountName(ledger.accounts, row.accountId))}</td></tr><tr><td>Open ${formatMMK(row.opening)} · In ${formatMMK(row.inflow)} · Out ${formatMMK(row.outflow)}</td><td class="amount">Sys ${formatMMK(row.systemClosing)}</td></tr><tr><td>Ground ${row.groundClosing == null ? "-" : formatMMK(row.groundClosing)}</td><td class="amount">Diff ${row.difference == null ? "-" : formatMMK(row.difference)}</td></tr>`,
+      )
+      .join("");
+    const walletRows = reportWalletRows
+      .map(
+        (row) =>
+          `<tr><td>${escapeHtml(row.account.name)} · net ${formatMMK(row.net)}</td><td class="amount">Fee ${formatMMK(row.commission)}</td></tr>`,
+      )
+      .join("");
+    const transactionRows = filteredTransactions
+      .map(
+        (transaction) => `
       <tr><td colspan="2" class="item">${escapeHtml(kindLabel(transaction.kind))} · ${escapeHtml(transaction.time)}</td></tr>
-      <tr><td>${escapeHtml(transaction.customer || transactionParty(transaction))}</td><td class="amount">${formatMMK(transaction.amount)}</td></tr>
+      <tr><td>${escapeHtml(transaction.date)} · ${escapeHtml(transaction.customer || "Walk-in")}</td><td class="amount">${formatMMK(transaction.amount)}</td></tr>
+      <tr><td>${escapeHtml(transactionParty(ledger.accounts, transaction))}</td><td class="amount">Amount ${formatMMK(transaction.amount)}</td></tr>
+      <tr><td>Commission → ${escapeHtml(accountName(ledger.accounts, commissionAccountId(transaction)))}</td><td class="amount">${formatMMK(transaction.commission)}</td></tr>
       ${transaction.commission ? `<tr><td class="muted">Commission</td><td class="amount">${formatMMK(transaction.commission)}</td></tr>` : ""}
-    `).join("");
-    printWindow.document.write(`<!doctype html><html><head><title>Ledger receipt</title><style>
-      @page{size:80mm auto;margin:4mm}*{box-sizing:border-box}body{width:72mm;margin:0;color:#17251f;font:12px/1.4 Arial,sans-serif}header{text-align:center;border-bottom:1px dashed #555;padding-bottom:10px}h1{font-size:19px;margin:0 0 5px}p{margin:2px 0}.rule{border:0;border-top:1px dashed #777;margin:9px 0}table{width:100%;border-collapse:collapse}td{padding:2px 0;vertical-align:top}.item{padding-top:7px;font-weight:bold}.amount{text-align:right;white-space:nowrap}.muted{color:#666}.total{font-weight:bold;font-size:13px}footer{text-align:center;margin-top:14px}
+    `,
+      )
+      .join("");
+    const rows = `<tr><td colspan="2" class="section">DAILY ACCOUNT BREAKDOWN</td></tr>${sessionRows || '<tr><td colspan="2">No sessions in this period</td></tr>'}<tr><td colspan="2" class="section">WALLET SUMMARY · NET / FEES</td></tr>${walletRows || '<tr><td colspan="2">No wallet activity</td></tr>'}<tr><td colspan="2" class="section">TRANSACTIONS</td></tr>${transactionRows || '<tr><td colspan="2">No transactions in this period</td></tr>'}`;
+    printWindow.document
+      .write(`<!doctype html><html><head><title>Ledger receipt</title><style>
+      @page{size:80mm auto;margin:4mm}*{box-sizing:border-box}body{width:72mm;margin:0;color:#17251f;font:12px/1.4 Arial,sans-serif}header{text-align:center;border-bottom:1px dashed #555;padding-bottom:10px}h1{font-size:19px;margin:0 0 5px}p{margin:2px 0}.rule{border:0;border-top:1px dashed #777;margin:9px 0}table{width:100%;border-collapse:collapse}td{padding:2px 0;vertical-align:top}.item{padding-top:7px;font-weight:bold}.section{padding-top:10px;border-bottom:1px dashed #777;font-size:10px;font-weight:bold}.amount{text-align:right;white-space:nowrap}.muted{color:#666}.total{font-weight:bold;font-size:13px}footer{text-align:center;margin-top:14px}
       </style></head><body><header><h1>DAILY LEDGER</h1><p>${escapeHtml(formatDate(dateFrom, { month: "short", day: "numeric", year: "numeric" }))}</p><p>Statement ${escapeHtml(dateFrom)} to ${escapeHtml(dateTo)}</p></header><hr class="rule"><table>${rows || "<tr><td>No transactions in this period</td></tr>"}</table><hr class="rule"><table><tr><td>Start-day opening</td><td class="amount">${formatMMK(reportOpeningBalance)}</td></tr><tr class="total"><td>End-day system close</td><td class="amount">${formatMMK(reportSystemClosing)}</td></tr></table><footer>Thank you</footer><script>window.onload=()=>window.print()<\/script></body></html>`);
     printWindow.document.close();
   }
 
-  const rangeInflow = filteredTransactions.filter((transaction) => transaction.kind === "CASH_IN").reduce((total, transaction) => total + transaction.amount, 0);
-  const rangeOutflow = filteredTransactions.filter((transaction) => transaction.kind === "CASH_OUT" || transaction.kind === "EXPENSE").reduce((total, transaction) => total + transaction.amount, 0);
+  const rangeInflow = filteredTransactions
+    .filter((transaction) => transaction.kind === "CASH_IN")
+    .reduce((total, transaction) => total + transaction.amount, 0);
+  const rangeOutflow = filteredTransactions
+    .filter(
+      (transaction) =>
+        transaction.kind === "CASH_OUT" || transaction.kind === "EXPENSE",
+    )
+    .reduce((total, transaction) => total + transaction.amount, 0);
 
   return (
     <div className="dashboard-shell flex min-h-screen">
       <aside className="sidebar fixed inset-y-0 left-0 z-30 hidden w-[236px] flex-col px-5 py-6 text-white lg:flex">
-        <a href="#overview" className="mb-11 flex items-center gap-3 px-2 no-underline"><span className="grid size-10 place-items-center rounded-[12px] bg-[#c6f36b] text-[#173c31]"><Activity size={21} strokeWidth={2.5} /></span><span><span className="block text-[19px] font-semibold tracking-[-0.5px]">ledger<span className="text-[#c6f36b]">.</span></span><span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-[1.7px] text-white/45">Cash operations</span></span></a>
-        <p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">Workspace</p>
+        <a
+          href="#overview"
+          className="mb-11 flex items-center gap-3 px-2 no-underline"
+        >
+          <span className="grid size-10 place-items-center rounded-[12px] bg-[#c6f36b] text-[#173c31]">
+            <Activity size={21} strokeWidth={2.5} />
+          </span>
+          <span>
+            <span className="block text-[19px] font-semibold tracking-[-0.5px]">
+              ledger<span className="text-[#c6f36b]">.</span>
+            </span>
+            <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-[1.7px] text-white/45">
+              Cash operations
+            </span>
+          </span>
+        </a>
+        <p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">
+          Workspace
+        </p>
         <nav className="flex flex-col gap-1" aria-label="Main navigation">
-          <a href="#overview" className="flex h-10 items-center gap-3 rounded-[8px] bg-white/10 px-3 text-[12px] font-medium text-white no-underline"><LayoutDashboard size={16} />Overview<span className="ml-auto size-1.5 rounded-full bg-[#c6f36b]" /></a>
-          <a href="#transactions" className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"><ArrowLeftRight size={16} />Transactions</a>
-          <a href="#reconciliation" className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"><CircleCheck size={16} />Reconciliation</a>
-          <a href="#reports" className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"><FileText size={16} />Reports</a>
+          <a
+            href="#overview"
+            className="flex h-10 items-center gap-3 rounded-[8px] bg-white/10 px-3 text-[12px] font-medium text-white no-underline"
+          >
+            <LayoutDashboard size={16} />
+            Overview
+            <span className="ml-auto size-1.5 rounded-full bg-[#c6f36b]" />
+          </a>
+          <a
+            href="#transactions"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <ArrowLeftRight size={16} />
+            Transactions
+          </a>
+          <a
+            href="#reconciliation"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <CircleCheck size={16} />
+            Reconciliation
+          </a>
+          <a
+            href="#reports"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <FileText size={16} />
+            Reports
+          </a>
         </nav>
-        <div className="mt-9"><p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">Accounts</p><nav className="flex flex-col gap-1" aria-label="Payment accounts">
-          {accounts.map((account) => <a key={account.id} href="#accounts" className="flex h-9 items-center gap-3 rounded-[8px] px-3 text-[11px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"><span className={`grid size-5 place-items-center rounded-[6px] text-[9px] font-bold ${account.color === "mint" ? "bg-[#c6f36b] text-[#173c31]" : account.color === "sky" ? "bg-[#9bc9eb] text-[#173c31]" : account.color === "gold" ? "bg-[#f2c77d] text-[#49371e]" : "bg-[#edaaa7] text-[#522b2d]"}`}>{account.mark}</span>{account.shortName}</a>)}
-        </nav></div>
-        <div className="mt-auto rounded-[10px] border border-white/10 bg-white/5 p-3.5"><div className="flex items-center gap-2 text-[10px] font-medium text-white/80"><span className={`size-1.5 rounded-full ${isOpen ? "animate-pulse bg-[#c6f36b]" : "bg-white/35"}`} />{isOpen ? "Session in progress" : isClosed ? "Day completed" : "No session started"}</div><p className="mb-0 mt-2 text-[10px] leading-4 text-white/45">{isOpen ? `Opened ${todaySession?.openedAt ? new Date(todaySession.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "today"}` : "Your records are saved on this device."}</p></div>
+        <div className="mt-9">
+          <p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">
+            Accounts
+          </p>
+          <nav className="flex flex-col gap-1" aria-label="Payment accounts">
+            {accounts.map((account) => (
+              <a
+                key={account.id}
+                href="#accounts"
+                className="flex h-9 items-center gap-3 rounded-[8px] px-3 text-[11px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+              >
+                <span
+                  className={`grid size-5 place-items-center rounded-[6px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
+                >
+                  {account.mark}
+                </span>
+                {account.shortName}
+              </a>
+            ))}
+          </nav>
+        </div>
+        <div className="mt-auto rounded-[10px] border border-white/10 bg-white/5 p-3.5">
+          <div className="flex items-center gap-2 text-[10px] font-medium text-white/80">
+            <span
+              className={`size-1.5 rounded-full ${isOpen ? "animate-pulse bg-[#c6f36b]" : "bg-white/35"}`}
+            />
+            {isOpen
+              ? "Session in progress"
+              : isClosed
+                ? "Day completed"
+                : "No session started"}
+          </div>
+          <p className="mb-0 mt-2 text-[10px] leading-4 text-white/45">
+            {isOpen
+              ? `Opened ${todaySession?.openedAt ? new Date(todaySession.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "today"}`
+              : "Your records are saved on this device."}
+          </p>
+        </div>
       </aside>
 
       <main id="overview" className="min-w-0 flex-1 lg:ml-[236px]">
         <header className="topbar-actions sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-[#e5e9e4] bg-[#f3f5f2]/95 px-4 backdrop-blur md:px-8">
-          <div className="flex items-center gap-3"><button aria-label="Toggle navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)} className="grid size-9 place-items-center rounded-[8px] border border-[#e1e6e0] bg-white text-[#34443c] lg:hidden">{mobileNavOpen ? <X size={17} /> : <Menu size={17} />}</button><div><p className="m-0 text-[10px] font-medium uppercase tracking-[1.5px] text-[#87928b]">Daily operations</p><h1 className="m-0 mt-0.5 text-[15px] font-semibold tracking-[-0.25px] text-[#17251f]">Cash ledger</h1></div></div>
-          <div className="flex items-center gap-2.5 md:gap-4"><div className="hidden items-center gap-2 text-[11px] text-[#758179] sm:flex"><CalendarDays size={14} />{formatDate(today, { weekday: "short", month: "short", day: "numeric" })}</div>{isOpen ? <button onClick={() => setModal("close")} className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"><span className="size-1.5 rounded-full bg-[#c6f36b]" />Close session</button> : isClosed ? <span className="flex h-9 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-3 text-[11px] font-semibold text-[#5c6a61]"><Check size={14} />Session closed</span> : <button onClick={() => setModal("open")} className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"><Plus size={15} />Open session</button>}</div>
+          <div className="flex items-center gap-3">
+            <button
+              aria-label="Toggle navigation"
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+              className="grid size-9 place-items-center rounded-[8px] border border-[#e1e6e0] bg-white text-[#34443c] lg:hidden"
+            >
+              {mobileNavOpen ? <X size={17} /> : <Menu size={17} />}
+            </button>
+            <div>
+              <p className="m-0 text-[10px] font-medium uppercase tracking-[1.5px] text-[#87928b]">
+                Daily operations
+              </p>
+              <h1 className="m-0 mt-0.5 text-[15px] font-semibold tracking-[-0.25px] text-[#17251f]">
+                Cash ledger
+              </h1>
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5 md:gap-4">
+            <div className="flex items-center gap-2 rounded-[7px] border border-[#e1e6e0] bg-white px-2.5 py-1.5 text-[10px] text-[#526158]">
+              <CalendarDays size={14} className="shrink-0 text-[#6e8b58]" />
+              <span className="hidden font-medium sm:inline">Session date</span>
+              <input
+                aria-label="Active session date"
+                type="date"
+                value={activeDate}
+                max={today}
+                onChange={(event) => selectSessionDate(event.target.value)}
+                className="w-[112px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none"
+              />
+            </div>
+            <button
+              onClick={() => setModal("accounts")}
+              className="hidden h-9 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#4a5d50] sm:flex"
+            >
+              <Landmark size={14} />
+              Manage accounts
+            </button>
+            {isOpen ? (
+              <button
+                onClick={startClosingFlow}
+                className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+              >
+                <span className="size-1.5 rounded-full bg-[#c6f36b]" />
+                Close session
+              </button>
+            ) : isClosed ? (
+              <button
+                onClick={() => requestAdminUnlock("reopen")}
+                className="flex h-9 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3]"
+              >
+                <Pencil size={13} />
+                Reopen / Edit Session
+              </button>
+            ) : (
+              <button
+                onClick={startOpeningFlow}
+                className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+              >
+                <Plus size={15} />
+                Open session
+              </button>
+            )}
+          </div>
         </header>
-        {mobileNavOpen && <nav className="scrollbar-hidden flex gap-2 overflow-x-auto border-b border-[#e5e9e4] bg-white px-4 py-2.5 lg:hidden" aria-label="Mobile navigation">{[["#overview", "Overview"], ["#transactions", "Transactions"], ["#reconciliation", "Reconciliation"], ["#reports", "Reports"]].map(([href, label]) => <a key={href} href={href} onClick={() => setMobileNavOpen(false)} className="whitespace-nowrap rounded-[7px] bg-[#f3f5f2] px-3 py-2 text-[11px] font-medium text-[#516057] no-underline">{label}</a>)}</nav>}
+        {mobileNavOpen && (
+          <nav
+            className="scrollbar-hidden flex gap-2 overflow-x-auto border-b border-[#e5e9e4] bg-white px-4 py-2.5 lg:hidden"
+            aria-label="Mobile navigation"
+          >
+            {[
+              ["#overview", "Overview"],
+              ["#transactions", "Transactions"],
+              ["#reconciliation", "Reconciliation"],
+              ["#reports", "Reports"],
+            ].map(([href, label]) => (
+              <a
+                key={href}
+                href={href}
+                onClick={() => setMobileNavOpen(false)}
+                className="whitespace-nowrap rounded-[7px] bg-[#f3f5f2] px-3 py-2 text-[11px] font-medium text-[#516057] no-underline"
+              >
+                {label}
+              </a>
+            ))}
+          </nav>
+        )}
 
         <div className="mx-auto max-w-[1440px] px-4 pb-12 pt-6 md:px-8 md:pt-8">
-          {message && <div role="status" className="fade-up mb-4 flex items-center gap-2 rounded-[8px] border border-[#d9e8c9] bg-[#eff7e6] px-3.5 py-2.5 text-[11px] text-[#42642d]"><CircleCheck size={15} />{message}</div>}
-          <section className="fade-up mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-[#8b968e]">{formatDate(today)}</p><h2 className="m-0 text-[24px] font-semibold leading-tight tracking-[-0.9px] text-[#17251f] md:text-[29px]">Good day, operator<span className="text-[#87a953]">.</span></h2><p className="mb-0 mt-2 text-[12px] text-[#7b8780]">Your counter at a glance. Every kyat accounted for.</p></div><div className="flex items-center gap-2 self-start rounded-[7px] border border-[#e1e6e0] bg-white px-3 py-2 text-[10px] text-[#657269] sm:self-auto"><span className={`size-1.5 rounded-full ${isOpen ? "bg-[#76aa42]" : isClosed ? "bg-[#87928b]" : "bg-[#efa265]"}`} />{isOpen ? "Day is open" : isClosed ? "Day is closed" : "Awaiting opening balance"}</div></section>
+          {message && (
+            <div
+              role="status"
+              className="fade-up mb-4 flex items-center gap-2 rounded-[8px] border border-[#d9e8c9] bg-[#eff7e6] px-3.5 py-2.5 text-[11px] text-[#42642d]"
+            >
+              <CircleCheck size={15} />
+              {message}
+            </div>
+          )}
+          <section className="fade-up mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+            <div>
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-[#8b968e]">
+                {formatDate(activeDate)}
+              </p>
+              <h2 className="m-0 text-[24px] font-semibold leading-tight tracking-[-0.9px] text-[#17251f] md:text-[29px]">
+                Good day, operator<span className="text-[#87a953]">.</span>
+              </h2>
+              <p className="mb-0 mt-2 text-[12px] text-[#7b8780]">
+                Your counter at a glance. Every kyat accounted for.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 self-start rounded-[7px] border border-[#e1e6e0] bg-white px-3 py-2 text-[10px] text-[#657269] sm:self-auto">
+              <span
+                className={`size-1.5 rounded-full ${isOpen ? "bg-[#76aa42]" : isClosed ? "bg-[#87928b]" : "bg-[#efa265]"}`}
+              />
+              {isOpen
+                ? "Day is open"
+                : isClosed
+                  ? "Day is closed"
+                  : "Awaiting opening balance"}
+            </div>
+          </section>
 
           <section className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
-            <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6"><div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" /><div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" /><div className="relative flex h-full flex-col justify-between gap-8"><div className="flex items-start justify-between gap-4"><div><p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">Cash position · MMK</p><p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">{formatMMK(balances["cash-drawer"])}</p><p className="mb-0 mt-2 text-[10px] text-white/55">{isOpen ? "Live drawer balance" : isClosed ? "Final drawer balance" : "Opening balance not set"}</p></div><span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]"><WalletCards size={19} /></span></div><div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5"><div className="flex gap-6"><div><p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">Opening</p><p className="number-font mb-0 mt-1 text-[12px] font-medium">{formatMMK(openingBalance)} <span className="text-[9px] text-white/45">MMK</span></p></div><div><p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">System close</p><p className="number-font mb-0 mt-1 text-[12px] font-medium">{formatMMK(systemClosing)} <span className="text-[9px] text-white/45">MMK</span></p></div></div><span className="text-[9px] text-white/50">Updated just now</span></div></div></div>
-            <div className="flex min-h-[212px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5 md:p-6"><div className="flex items-start justify-between"><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">Session control</p><h3 className="m-0 text-[16px] font-semibold tracking-[-0.3px]">{isOpen ? "Morning session" : isClosed ? "Session complete" : "Start the day"}</h3></div><span className={`grid size-9 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}>{isOpen ? <Clock3 size={17} /> : isClosed ? <Check size={17} /> : <Activity size={17} />}</span></div><p className="mb-4 mt-2 max-w-[320px] text-[11px] leading-5 text-[#849087]">{isOpen ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.` : isClosed ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.` : "Enter the physical opening cash before you start recording today’s transactions."}</p><div className="flex items-center justify-between gap-3 border-t border-[#edf0ec] pt-3.5"><span className="text-[10px] text-[#87928a]">{todayTransactions.length} transaction{todayTransactions.length === 1 ? "" : "s"} today</span>{!todaySession && <button onClick={() => setModal("open")} className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]">Set opening balance<ArrowRight size={13} /></button>}{isOpen && <button onClick={() => setModal("close")} className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4">Reconcile & close</button>}</div></div>
+            <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
+              <div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" />
+              <div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" />
+              <div className="relative flex h-full flex-col justify-between gap-8">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">
+                      Cash position · MMK
+                    </p>
+                    <p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">
+                      {formatMMK(balances["cash-drawer"])}
+                    </p>
+                    <p className="mb-0 mt-2 text-[10px] text-white/55">
+                      {isOpen
+                        ? "Live drawer balance"
+                        : isClosed
+                          ? "Final drawer balance"
+                          : "Opening balance not set"}
+                    </p>
+                  </div>
+                  <span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
+                    <WalletCards size={19} />
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5">
+                  <div className="flex gap-6">
+                    <div>
+                      <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
+                        Opening
+                      </p>
+                      <p className="number-font mb-0 mt-1 text-[12px] font-medium">
+                        {formatMMK(openingBalance)}{" "}
+                        <span className="text-[9px] text-white/45">MMK</span>
+                      </p>
+                    </div>
+                    <div>
+                      <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
+                        System close
+                      </p>
+                      <p className="number-font mb-0 mt-1 text-[12px] font-medium">
+                        {formatMMK(systemClosing)}{" "}
+                        <span className="text-[9px] text-white/45">MMK</span>
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-[9px] text-white/50">
+                    Updated just now
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex min-h-[212px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5 md:p-6">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">
+                    Session control
+                  </p>
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.3px]">
+                    {isOpen
+                      ? "Morning session"
+                      : isClosed
+                        ? "Session complete"
+                        : "Start the day"}
+                  </h3>
+                </div>
+                <span
+                  className={`grid size-9 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}
+                >
+                  {isOpen ? (
+                    <Clock3 size={17} />
+                  ) : isClosed ? (
+                    <Check size={17} />
+                  ) : (
+                    <Activity size={17} />
+                  )}
+                </span>
+              </div>
+              <p className="mb-4 mt-2 max-w-[320px] text-[11px] leading-5 text-[#849087]">
+                {isOpen
+                  ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.`
+                  : isClosed
+                    ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.`
+                    : "Enter the physical opening cash before you start recording today’s transactions."}
+              </p>
+              <div className="flex items-center justify-between gap-3 border-t border-[#edf0ec] pt-3.5">
+                <span className="text-[10px] text-[#87928a]">
+                  {todayTransactions.length} transaction
+                  {todayTransactions.length === 1 ? "" : "s"} today
+                </span>
+                {!todaySession && (
+                  <button
+                    onClick={startOpeningFlow}
+                    className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
+                  >
+                    Set opening balance
+                    <ArrowRight size={13} />
+                  </button>
+                )}
+                {isOpen && (
+                  <button
+                    onClick={startClosingFlow}
+                    className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                  >
+                    Reconcile & close
+                  </button>
+                )}
+                {isUnlocked && todaySession && (
+                  <button
+                    onClick={startOpeningFlow}
+                    className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                  >
+                    Edit opening balances
+                  </button>
+                )}
+              </div>
+            </div>
           </section>
 
-          <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">{[
-            { label: "Cash-in volume", amount: cashInTotal, hint: "Customer deposits", icon: ArrowDownLeft, tone: "bg-[#eaf5de] text-[#4b7b33]" },
-            { label: "Cash-out volume", amount: cashOutTotal, hint: "Customer withdrawals", icon: ArrowUpRight, tone: "bg-[#fff0e8] text-[#b66343]" },
-            { label: "Commissions", amount: commissions, hint: "Fees earned today", icon: TrendingUp, tone: "bg-[#e6f1f8] text-[#457a9d]" },
-            { label: "Operating expense", amount: expenseTotal, hint: "Cash paid out", icon: ReceiptText, tone: "bg-[#f2edf5] text-[#795e85]" },
-          ].map((metric) => <div key={metric.label} className="rounded-[10px] border border-[#e5e9e4] bg-white p-4 md:p-5"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-medium text-[#758178]">{metric.label}</span><span className={`grid size-7 place-items-center rounded-[7px] ${metric.tone}`}><metric.icon size={14} /></span></div><p className="number-font mb-0 mt-3 text-[19px] font-semibold tracking-[-0.6px] text-[#1c2b23] md:text-[22px]">{formatMMK(metric.amount)} <span className="text-[9px] font-medium tracking-normal text-[#98a199]">MMK</span></p><p className="mb-0 mt-1 text-[9px] text-[#98a199]">{metric.hint}</p></div>)}</section>
+          <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+            {[
+              {
+                label: "Cash-in volume",
+                amount: cashInTotal,
+                hint: "Customer deposits",
+                icon: ArrowDownLeft,
+                tone: "bg-[#eaf5de] text-[#4b7b33]",
+              },
+              {
+                label: "Cash-out volume",
+                amount: cashOutTotal,
+                hint: "Customer withdrawals",
+                icon: ArrowUpRight,
+                tone: "bg-[#fff0e8] text-[#b66343]",
+              },
+              {
+                label: "Commissions",
+                amount: commissions,
+                hint: "Fees earned today",
+                icon: TrendingUp,
+                tone: "bg-[#e6f1f8] text-[#457a9d]",
+              },
+              {
+                label: "Operating expense",
+                amount: expenseTotal,
+                hint: "Cash paid out",
+                icon: ReceiptText,
+                tone: "bg-[#f2edf5] text-[#795e85]",
+              },
+            ].map((metric) => (
+              <div
+                key={metric.label}
+                className="rounded-[10px] border border-[#e5e9e4] bg-white p-4 md:p-5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-medium text-[#758178]">
+                    {metric.label}
+                  </span>
+                  <span
+                    className={`grid size-7 place-items-center rounded-[7px] ${metric.tone}`}
+                  >
+                    <metric.icon size={14} />
+                  </span>
+                </div>
+                <p className="number-font mb-0 mt-3 text-[19px] font-semibold tracking-[-0.6px] text-[#1c2b23] md:text-[22px]">
+                  {formatMMK(metric.amount)}{" "}
+                  <span className="text-[9px] font-medium tracking-normal text-[#98a199]">
+                    MMK
+                  </span>
+                </p>
+                <p className="mb-0 mt-1 text-[9px] text-[#98a199]">
+                  {metric.hint}
+                </p>
+              </div>
+            ))}
+          </section>
 
-          <section id="accounts" className="mb-7 scroll-mt-24"><div className="mb-3 flex items-end justify-between"><div><h3 className="m-0 text-[13px] font-semibold">Account balances</h3><p className="mb-0 mt-1 text-[10px] text-[#8b968d]">Movement recorded in today’s session</p></div><span className="hidden items-center gap-1.5 text-[9px] text-[#929d94] sm:flex"><Landmark size={12} />8 accounts</span></div><div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-8">{accounts.map((account) => <div key={account.id} className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-3"><div className="mb-3 flex items-center gap-2"><span className={`grid size-6 shrink-0 place-items-center rounded-[7px] text-[9px] font-bold ${account.color === "mint" ? "bg-[#e6f4cf] text-[#43712c]" : account.color === "sky" ? "bg-[#e2f0f8] text-[#457896]" : account.color === "gold" ? "bg-[#fff1d6] text-[#9b7530]" : "bg-[#f8e6e5] text-[#a46060]"}`}>{account.mark}</span><span className="truncate text-[9px] font-medium text-[#69766e]">{account.shortName}</span></div><p className="number-font m-0 truncate text-[13px] font-semibold tracking-[-0.3px] text-[#213128]">{formatMMK(balances[account.id])}</p><p className="mb-0 mt-0.5 text-[8px] text-[#a0aaa2]">MMK</p></div>)}</div></section>
+          <section id="accounts" className="mb-7 scroll-mt-24">
+            <div className="mb-3 flex items-end justify-between">
+              <div>
+                <h3 className="m-0 text-[13px] font-semibold">
+                  Account balances
+                </h3>
+                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                  {todaySession
+                    ? `${todayActiveAccounts.length} active in today’s session`
+                    : "Every new session starts from manually entered balances"}
+                </p>
+              </div>
+              <button
+                onClick={() => setModal("accounts")}
+                className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#49604f]"
+              >
+                <Plus size={13} />
+                Manage accounts
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-8">
+              {accounts.map((account) => (
+                <div
+                  key={account.id}
+                  className={`min-w-0 rounded-[9px] border bg-white px-3 py-3 ${todaySession && !todaySession.activeAccountIds.includes(account.id) ? "border-dashed border-[#e5e9e4] opacity-55" : "border-[#e5e9e4]"}`}
+                >
+                  <div className="mb-3 flex items-center gap-2">
+                    <span
+                      className={`grid size-6 shrink-0 place-items-center rounded-[7px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
+                    >
+                      {account.mark}
+                    </span>
+                    <span className="truncate text-[9px] font-medium text-[#69766e]">
+                      {account.shortName}
+                    </span>
+                  </div>
+                  <p className="number-font m-0 truncate text-[13px] font-semibold tracking-[-0.3px] text-[#213128]">
+                    {todaySession?.activeAccountIds.includes(account.id)
+                      ? formatMMK(balances[account.id] ?? 0)
+                      : "—"}
+                  </p>
+                  <p className="mb-0 mt-0.5 text-[8px] text-[#a0aaa2]">
+                    {account.accountNumber || account.kind.toUpperCase()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
 
-          <section id="transactions" className="mb-7 scroll-mt-24"><div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end"><div><h3 className="m-0 text-[13px] font-semibold">Quick transaction</h3><p className="mb-0 mt-1 text-[10px] text-[#8b968d]">Capture a counter movement in a few seconds</p></div>{!isOpen && <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]"><CircleAlert size={13} />Open a session to enter transactions</span>}</div>
-            <form onSubmit={addTransaction} className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"><div className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden" role="tablist" aria-label="Transaction type">{(["CASH_IN", "CASH_OUT", "TRANSFER", "EXPENSE"] as TransactionKind[]).map((kind) => { const Icon = kindIcons[kind]; return <button type="button" role="tab" aria-selected={transactionKind === kind} key={kind} onClick={() => setTransactionKind(kind)} className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}><Icon size={13} />{kindLabel(kind)}</button>; })}</div>
+          <section id="transactions" className="mb-7 scroll-mt-24">
+            <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+              <div>
+                <h3 className="m-0 text-[13px] font-semibold">
+                  Quick transaction
+                </h3>
+                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                  Capture a counter movement in a few seconds
+                </p>
+              </div>
+              {!isOpen && (
+                <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]">
+                  <CircleAlert size={13} />
+                  Open a session to enter transactions
+                </span>
+              )}
+            </div>
+            <form
+              id="transaction-entry"
+              onSubmit={addTransaction}
+              className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
+            >
+              <div
+                className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden"
+                role="tablist"
+                aria-label="Transaction type"
+              >
+                {(
+                  [
+                    "CASH_IN",
+                    "CASH_OUT",
+                    "TRANSFER",
+                    "EXPENSE",
+                  ] as TransactionKind[]
+                ).map((kind) => {
+                  const Icon = kindIcons[kind];
+                  return (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={transactionKind === kind}
+                      key={kind}
+                      onClick={() => setTransactionKind(kind)}
+                      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
+                    >
+                      <Icon size={13} />
+                      {kindLabel(kind)}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {(transactionKind === "CASH_IN" || transactionKind === "CASH_OUT") && <label className="field-label">{transactionKind === "CASH_IN" ? "Received via" : "Paid to"}<span className="select-wrap"><select value={serviceAccountId} onChange={(event) => setServiceAccountId(event.target.value as AccountId)}>{accounts.filter((account) => account.id !== "cash-drawer").map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></label>}
-                {transactionKind === "TRANSFER" && <><label className="field-label">From account<span className="select-wrap"><select value={fromAccountId} onChange={(event) => setFromAccountId(event.target.value as AccountId)}>{accounts.filter((account) => account.id !== "cash-drawer").map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></label><label className="field-label">To account<span className="select-wrap"><select value={toAccountId} onChange={(event) => setToAccountId(event.target.value as AccountId)}>{accounts.filter((account) => account.id !== "cash-drawer").map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></label></>}
-                {transactionKind === "EXPENSE" && <label className="field-label">Paid from<span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">Cash in drawer</span></label>}
-                <label className="field-label">Amount · MMK<span className="input-wrap"><input required min="1" step="1" inputMode="numeric" type="number" placeholder="0" value={amountInput} onChange={(event) => setAmountInput(event.target.value)} /></span></label>
-                {transactionKind !== "EXPENSE" && <label className="field-label">Commission · MMK<span className="input-wrap"><input min="0" step="1" inputMode="numeric" type="number" placeholder="0" value={commissionInput} onChange={(event) => setCommissionInput(event.target.value)} /></span></label>}
-                <label className="field-label">Customer name <span className="optional-label">Optional</span><span className="input-wrap"><input autoComplete="name" placeholder="Name at counter" value={customerInput} onChange={(event) => setCustomerInput(event.target.value)} /></span></label>
-                <label className="field-label">Phone number <span className="optional-label">Optional</span><span className="input-wrap"><input autoComplete="tel" inputMode="tel" placeholder="09 xxx xxx xxx" value={phoneInput} onChange={(event) => setPhoneInput(event.target.value)} /></span></label>
-                <label className="field-label sm:col-span-2">Note <span className="optional-label">Optional</span><span className="input-wrap"><input placeholder="Reference or short note" value={noteInput} onChange={(event) => setNoteInput(event.target.value)} /></span></label>
-              </div><div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center"><span className="text-[9px] text-[#99a39b]">Transactions are saved in this browser on this device.</span><button disabled={!isOpen} type="submit" className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"><Plus size={14} />Add transaction</button></div>
-            </form></section>
+                {(transactionKind === "CASH_IN" ||
+                  transactionKind === "CASH_OUT") && (
+                  <label className="field-label">
+                    {transactionKind === "CASH_IN" ? "Received via" : "Paid to"}
+                    <AccountBadge
+                      account={
+                        transactionAccounts.find(
+                          (account) => account.id === serviceAccountId,
+                        ) ??
+                        transactionAccounts[0] ??
+                        ledger.accounts[0]
+                      }
+                      compact
+                    />
+                    <span className="select-wrap">
+                      <select
+                        value={serviceAccountId}
+                        onChange={(event) =>
+                          setServiceAccountId(event.target.value as AccountId)
+                        }
+                      >
+                        {transactionAccounts
+                          .filter((account) => account.id !== "cash-drawer")
+                          .map((account) => (
+                            <option key={account.id} value={account.id}>
+                              {account.name}
+                            </option>
+                          ))}
+                      </select>
+                      <ChevronDown size={14} />
+                    </span>
+                  </label>
+                )}
+                {transactionKind === "TRANSFER" && (
+                  <>
+                    <label className="field-label">
+                      From account
+                      <AccountBadge
+                        account={
+                          transactionAccounts.find(
+                            (account) => account.id === fromAccountId,
+                          ) ??
+                          transactionAccounts[0] ??
+                          ledger.accounts[0]
+                        }
+                        compact
+                      />
+                      <span className="select-wrap">
+                        <select
+                          value={fromAccountId}
+                          onChange={(event) =>
+                            setFromAccountId(event.target.value as AccountId)
+                          }
+                        >
+                          {transactionAccounts
+                            .filter((account) => account.id !== "cash-drawer")
+                            .map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
+                        </select>
+                        <ChevronDown size={14} />
+                      </span>
+                    </label>
+                    <label className="field-label">
+                      To account
+                      <AccountBadge
+                        account={
+                          transactionAccounts.find(
+                            (account) => account.id === toAccountId,
+                          ) ??
+                          transactionAccounts[0] ??
+                          ledger.accounts[0]
+                        }
+                        compact
+                      />
+                      <span className="select-wrap">
+                        <select
+                          value={toAccountId}
+                          onChange={(event) =>
+                            setToAccountId(event.target.value as AccountId)
+                          }
+                        >
+                          {transactionAccounts
+                            .filter((account) => account.id !== "cash-drawer")
+                            .map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
+                        </select>
+                        <ChevronDown size={14} />
+                      </span>
+                    </label>
+                  </>
+                )}
+                {transactionKind === "EXPENSE" && (
+                  <label className="field-label">
+                    Paid from
+                    <span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
+                      Cash in drawer
+                    </span>
+                  </label>
+                )}
+                <label className="field-label">
+                  Amount · MMK
+                  <span className="input-wrap">
+                    <input
+                      required
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      type="number"
+                      placeholder="0"
+                      value={amountInput}
+                      onChange={(event) => setAmountInput(event.target.value)}
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Commission · MMK
+                  <span className="input-wrap">
+                    <input
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      type="number"
+                      placeholder="0"
+                      value={commissionInput}
+                      onChange={(event) =>
+                        setCommissionInput(event.target.value)
+                      }
+                    />
+                  </span>
+                </label>
+                {Number(commissionInput) > 0 && (
+                  <label className="field-label">
+                    Commission Received In
+                    <span className="select-wrap">
+                      <select
+                        value={commissionDestinationId}
+                        onChange={(event) =>
+                          setCommissionDestinationId(event.target.value)
+                        }
+                      >
+                        <option value="cash-drawer">
+                          Cash Drawer (ငွေသားထဲတိုးမည်)
+                        </option>
+                        <option value="related">
+                          Source/Target Wallet (သက်ဆိုင်ရာ Wallet/Account
+                          ထဲတိုးမည်)
+                        </option>
+                        {transactionAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.name}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown size={14} />
+                    </span>
+                  </label>
+                )}
+                <label className="field-label">
+                  Customer name <span className="optional-label">Optional</span>
+                  <span className="input-wrap">
+                    <input
+                      autoComplete="name"
+                      placeholder="Name at counter"
+                      value={customerInput}
+                      onChange={(event) => setCustomerInput(event.target.value)}
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Phone number <span className="optional-label">Optional</span>
+                  <span className="input-wrap">
+                    <input
+                      autoComplete="tel"
+                      inputMode="tel"
+                      placeholder="09 xxx xxx xxx"
+                      value={phoneInput}
+                      onChange={(event) => setPhoneInput(event.target.value)}
+                    />
+                  </span>
+                </label>
+                <label className="field-label sm:col-span-2">
+                  Note <span className="optional-label">Optional</span>
+                  <span className="input-wrap">
+                    <input
+                      placeholder="Reference or short note"
+                      value={noteInput}
+                      onChange={(event) => setNoteInput(event.target.value)}
+                    />
+                  </span>
+                </label>
+              </div>
+              <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
+                <span className="text-[9px] text-[#99a39b]">
+                  Transactions are saved in this browser on this device.
+                </span>
+                <button
+                  disabled={!isOpen}
+                  type="submit"
+                  className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {editingTransactionId ? (
+                    <Check size={14} />
+                  ) : (
+                    <Plus size={14} />
+                  )}
+                  {editingTransactionId ? "Save changes" : "Add transaction"}
+                </button>
+                {editingTransactionId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingTransactionId(null);
+                      setAmountInput("");
+                      setCommissionInput("");
+                      setCustomerInput("");
+                      setPhoneInput("");
+                      setNoteInput("");
+                    }}
+                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3 text-[10px] font-medium text-[#6d7971]"
+                  >
+                    Cancel edit
+                  </button>
+                )}
+              </div>
+            </form>
+          </section>
 
           <section className="mb-7 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div id="reconciliation" className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"><div className="mb-4 flex items-start justify-between gap-3"><div><h3 className="m-0 text-[13px] font-semibold">Evening reconciliation</h3><p className="mb-0 mt-1 text-[10px] text-[#8b968d]">Cash drawer · today</p></div><span className="grid size-8 place-items-center rounded-[7px] bg-[#eef5e7] text-[#6a913f]"><CircleCheck size={16} /></span></div>
-              <div className="overflow-hidden rounded-[8px] border border-[#edf0ec]">{[["Opening balance", openingBalance, "#"], ["Cash-in", cashInTotal, "+"], ["Cash-out & expenses", cashOutTotal + expenseTotal, "−"], ["Commissions", commissions, "+"]].map(([label, amount, sign]) => <div key={label} className="flex items-center justify-between border-b border-[#edf0ec] px-3.5 py-2.5 last:border-0"><span className="text-[10px] text-[#758178]">{label}</span><span className="number-font text-[10px] font-medium text-[#3a4940]">{sign === "#" ? "" : sign}{formatMMK(Number(amount))} <span className="text-[8px] text-[#a0aaa2]">MMK</span></span></div>)}<div className="flex items-center justify-between bg-[#f4f7f1] px-3.5 py-3"><span className="text-[10px] font-semibold text-[#304439]">System closing</span><span className="number-font text-[13px] font-semibold text-[#21392b]">{formatMMK(systemClosing)} <span className="text-[8px] font-medium">MMK</span></span></div></div>
-              {todaySession?.closingBalance != null && <div className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}><span className="flex items-center gap-1.5 text-[10px] font-semibold">{closingDifference === 0 ? <CircleCheck size={13} /> : <CircleAlert size={13} />}{closingDifference === 0 ? "Balanced" : "Discrepancy"}<span className="font-normal opacity-70">· actual {formatMMK(todaySession.closingBalance)} MMK</span></span><span className="number-font text-[11px] font-semibold">{closingDifference === 0 ? "0" : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))}`} MMK</span></div>}
-              {isOpen && <button onClick={() => setModal("close")} className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"><Check size={14} />Enter actual cash & close</button>}{!todaySession && <button onClick={() => setModal("open")} className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"><Plus size={14} />Open session to begin</button>}
+            <div
+              id="reconciliation"
+              className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
+            >
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Evening reconciliation
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    {formatDate(activeDate, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}{" "}
+                    · active accounts
+                  </p>
+                </div>
+                <span className="grid size-8 place-items-center rounded-[7px] bg-[#eef5e7] text-[#6a913f]">
+                  <CircleCheck size={16} />
+                </span>
+              </div>
+              <div className="overflow-hidden rounded-[8px] border border-[#edf0ec]">
+                {[
+                  ["Opening balance", openingBalance, "#"],
+                  ["Cash-in", cashInTotal, "+"],
+                  ["Cash-out & expenses", cashOutTotal + expenseTotal, "−"],
+                  ["Commissions", commissions, "+"],
+                ].map(([label, amount, sign]) => (
+                  <div
+                    key={label}
+                    className="flex items-center justify-between border-b border-[#edf0ec] px-3.5 py-2.5 last:border-0"
+                  >
+                    <span className="text-[10px] text-[#758178]">{label}</span>
+                    <span className="number-font text-[10px] font-medium text-[#3a4940]">
+                      {sign === "#" ? "" : sign}
+                      {formatMMK(Number(amount))}{" "}
+                      <span className="text-[8px] text-[#a0aaa2]">MMK</span>
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between bg-[#f4f7f1] px-3.5 py-3">
+                  <span className="text-[10px] font-semibold text-[#304439]">
+                    System closing
+                  </span>
+                  <span className="number-font text-[13px] font-semibold text-[#21392b]">
+                    {formatMMK(systemClosing)}{" "}
+                    <span className="text-[8px] font-medium">MMK</span>
+                  </span>
+                </div>
+              </div>
+              {todaySession?.closingBalance != null && (
+                <div
+                  className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}
+                >
+                  <span className="flex items-center gap-1.5 text-[10px] font-semibold">
+                    {closingDifference === 0 ? (
+                      <CircleCheck size={13} />
+                    ) : (
+                      <CircleAlert size={13} />
+                    )}
+                    {closingDifference === 0 ? "Balanced" : "Discrepancy"}
+                    <span className="font-normal opacity-70">
+                      · actual {formatMMK(todaySession.closingBalance)} MMK
+                    </span>
+                  </span>
+                  <span className="number-font text-[11px] font-semibold">
+                    {closingDifference === 0
+                      ? "0"
+                      : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))}`}{" "}
+                    MMK
+                  </span>
+                </div>
+              )}
+              {isOpen && (
+                <button
+                  onClick={startClosingFlow}
+                  className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                >
+                  <Check size={14} />
+                  Enter actual cash & close
+                </button>
+              )}
+              {!todaySession && (
+                <button
+                  onClick={startOpeningFlow}
+                  className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                >
+                  <Plus size={14} />
+                  Open session to begin
+                </button>
+              )}
             </div>
-            <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"><div className="mb-4 flex items-start justify-between"><div><h3 className="m-0 text-[13px] font-semibold">Today’s activity</h3><p className="mb-0 mt-1 text-[10px] text-[#8b968d]">Account movement in the session</p></div><span className="text-[9px] text-[#929d94]">{todayTransactions.length} records</span></div><div className="space-y-3.5">{[
-              { label: "Cash received", value: cashInTotal, icon: ArrowDownLeft, color: "text-[#608c3f]", percent: systemClosing ? Math.min((cashInTotal / Math.abs(systemClosing || 1)) * 100, 100) : 0 },
-              { label: "Cash paid out", value: cashOutTotal + expenseTotal, icon: ArrowUpRight, color: "text-[#bc7452]", percent: systemClosing ? Math.min(((cashOutTotal + expenseTotal) / Math.abs(systemClosing || 1)) * 100, 100) : 0 },
-              { label: "Fees earned", value: commissions, icon: TrendingUp, color: "text-[#5282a0]", percent: systemClosing ? Math.min((commissions / Math.abs(systemClosing || 1)) * 100, 100) : 0 },
-            ].map((item) => <div key={item.label}><div className="mb-1.5 flex items-center justify-between"><span className="flex items-center gap-1.5 text-[10px] text-[#6f7b73]"><item.icon size={13} className={item.color} />{item.label}</span><span className="number-font text-[10px] font-semibold">{formatMMK(item.value)} <span className="text-[8px] font-normal text-[#9ba59d]">MMK</span></span></div><div className="h-[5px] overflow-hidden rounded-full bg-[#f0f2ef]"><div className={`h-full rounded-full ${item.label === "Cash received" ? "bg-[#a9d47a]" : item.label === "Cash paid out" ? "bg-[#efb088]" : "bg-[#9bc9eb]"}`} style={{ width: `${item.percent}%` }} /></div></div>)}</div><div className="mt-5 flex items-center justify-between border-t border-[#edf0ec] pt-3"><span className="flex items-center gap-1.5 text-[9px] text-[#89948c]"><Activity size={12} />Net drawer change</span><span className="number-font text-[11px] font-semibold">{systemClosing - openingBalance >= 0 ? "+" : "−"}{formatMMK(Math.abs(systemClosing - openingBalance))} <span className="text-[8px] font-normal text-[#9ba59d]">MMK</span></span></div></div>
+            <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5">
+              <div className="mb-4 flex items-start justify-between">
+                <div>
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Session activity
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    Account movement in the session
+                  </p>
+                </div>
+                <span className="text-[9px] text-[#929d94]">
+                  {todayTransactions.length} records
+                </span>
+              </div>
+              <div className="space-y-3.5">
+                {[
+                  {
+                    label: "Cash received",
+                    value: cashInTotal,
+                    icon: ArrowDownLeft,
+                    color: "text-[#608c3f]",
+                    percent: systemClosing
+                      ? Math.min(
+                          (cashInTotal / Math.abs(systemClosing || 1)) * 100,
+                          100,
+                        )
+                      : 0,
+                  },
+                  {
+                    label: "Cash paid out",
+                    value: cashOutTotal + expenseTotal,
+                    icon: ArrowUpRight,
+                    color: "text-[#bc7452]",
+                    percent: systemClosing
+                      ? Math.min(
+                          ((cashOutTotal + expenseTotal) /
+                            Math.abs(systemClosing || 1)) *
+                            100,
+                          100,
+                        )
+                      : 0,
+                  },
+                  {
+                    label: "Fees earned",
+                    value: commissions,
+                    icon: TrendingUp,
+                    color: "text-[#5282a0]",
+                    percent: systemClosing
+                      ? Math.min(
+                          (commissions / Math.abs(systemClosing || 1)) * 100,
+                          100,
+                        )
+                      : 0,
+                  },
+                ].map((item) => (
+                  <div key={item.label}>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5 text-[10px] text-[#6f7b73]">
+                        <item.icon size={13} className={item.color} />
+                        {item.label}
+                      </span>
+                      <span className="number-font text-[10px] font-semibold">
+                        {formatMMK(item.value)}{" "}
+                        <span className="text-[8px] font-normal text-[#9ba59d]">
+                          MMK
+                        </span>
+                      </span>
+                    </div>
+                    <div className="h-[5px] overflow-hidden rounded-full bg-[#f0f2ef]">
+                      <div
+                        className={`h-full rounded-full ${item.label === "Cash received" ? "bg-[#a9d47a]" : item.label === "Cash paid out" ? "bg-[#efb088]" : "bg-[#9bc9eb]"}`}
+                        style={{ width: `${item.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 flex items-center justify-between border-t border-[#edf0ec] pt-3">
+                <span className="flex items-center gap-1.5 text-[9px] text-[#89948c]">
+                  <Activity size={12} />
+                  Net drawer change
+                </span>
+                <span className="number-font text-[11px] font-semibold">
+                  {systemClosing - openingBalance >= 0 ? "+" : "−"}
+                  {formatMMK(Math.abs(systemClosing - openingBalance))}{" "}
+                  <span className="text-[8px] font-normal text-[#9ba59d]">
+                    MMK
+                  </span>
+                </span>
+              </div>
+            </div>
           </section>
 
-          <section id="reports" className="scroll-mt-24"><div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h3 className="m-0 text-[13px] font-semibold">Transaction register</h3><p className="mb-0 mt-1 text-[10px] text-[#8b968d]">Search the ledger by date and export a statement</p></div><div className="flex flex-wrap items-center gap-2"><label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2"><span className="text-[9px] text-[#87928a]">From</span><input aria-label="Start date" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none" /></label><label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2"><span className="text-[9px] text-[#87928a]">To</span><input aria-label="End date" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none" /></label></div></div>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2.5"><div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] text-[#78847c]"><span className="flex items-center gap-1.5"><Search size={12} />{filteredTransactions.length} entries</span><span>Inflow <b className="number-font text-[#4c7540]">{formatMMK(rangeInflow)} MMK</b></span><span>Outflow <b className="number-font text-[#ad6749]">{formatMMK(rangeOutflow)} MMK</b></span></div><div className="flex items-center gap-1.5"><button onClick={exportExcel} title="Export Excel" aria-label="Export Excel" className="grid size-7 place-items-center rounded-[6px] text-[#568447] transition hover:bg-[#eef5e7]"><FileSpreadsheet size={15} /></button><button onClick={exportPdf} title="Export PDF summary" aria-label="Export PDF summary" className="grid size-7 place-items-center rounded-[6px] text-[#62809a] transition hover:bg-[#edf4f8]"><FileText size={15} /></button><button onClick={printThermalSlip} title="Print 80 mm slip" aria-label="Print 80 mm slip" className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] transition hover:bg-[#fbf0e7]"><Printer size={15} /></button></div></div>
-            <div className="table-scroll rounded-[10px] border border-[#e4e8e3] bg-white"><table className="w-full min-w-[820px] border-collapse text-left"><thead><tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[9px] font-semibold uppercase tracking-[1px] text-[#929d95]"><th className="px-4 py-3 font-semibold">Time</th><th className="px-4 py-3 font-semibold">Type</th><th className="px-4 py-3 font-semibold">Customer</th><th className="px-4 py-3 font-semibold">Account movement</th><th className="px-4 py-3 text-right font-semibold">Amount</th><th className="px-4 py-3 text-right font-semibold">Fee</th><th className="w-10 px-3 py-3" /></tr></thead><tbody>{filteredTransactions.map((transaction) => { const Icon = kindIcons[transaction.kind]; return <tr key={transaction.id} className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"><td className="px-4 py-3 text-[10px] text-[#77837a]">{transaction.time}<span className="mt-0.5 block text-[8px] text-[#a0aaa3]">{transaction.date}</span></td><td className="px-4 py-3"><span className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-1 text-[9px] font-medium ${kindColors[transaction.kind]}`}><Icon size={11} />{kindLabel(transaction.kind)}</span></td><td className="px-4 py-3"><span className="block max-w-[145px] truncate text-[10px] font-medium text-[#37463d]">{transaction.customer || "Walk-in customer"}</span>{transaction.phone && <span className="mt-0.5 block text-[9px] text-[#9ba59d]">{transaction.phone}</span>}{transaction.note && <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">{transaction.note}</span>}</td><td className="px-4 py-3 text-[9px] text-[#768279]">{transactionParty(transaction)}</td><td className="number-font px-4 py-3 text-right text-[10px] font-semibold text-[#35443a]">{formatMMK(transaction.amount)} <span className="text-[8px] font-normal text-[#a0aaa3]">MMK</span></td><td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">{transaction.commission ? formatMMK(transaction.commission) : "—"}</td><td className="px-3 py-3 text-right">{transaction.date === today && !isClosed && <button onClick={() => removeTransaction(transaction.id)} aria-label={`Remove ${kindLabel(transaction.kind)} transaction`} title="Remove transaction" className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"><X size={13} /></button>}</td></tr>; })}</tbody></table>
-              {filteredTransactions.length === 0 && <div className="flex min-h-[126px] flex-col items-center justify-center px-4 text-center"><span className="grid size-8 place-items-center rounded-[8px] bg-[#f1f4ef] text-[#8a998c]"><ReceiptText size={15} /></span><p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">No transactions in this date range</p><p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">Entries will appear here as you record them.</p></div>}</div>
+          <section id="reports" className="scroll-mt-24">
+            <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+              <div>
+                <h3 className="m-0 text-[13px] font-semibold">
+                  Transaction register
+                </h3>
+                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                  Search the ledger by date and export a statement
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                  <span className="text-[9px] text-[#87928a]">From</span>
+                  <input
+                    aria-label="Start date"
+                    type="date"
+                    value={dateFrom}
+                    onChange={(event) => setDateFrom(event.target.value)}
+                    className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                  />
+                </label>
+                <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                  <span className="text-[9px] text-[#87928a]">To</span>
+                  <input
+                    aria-label="End date"
+                    type="date"
+                    value={dateTo}
+                    onChange={(event) => setDateTo(event.target.value)}
+                    className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] text-[#78847c]">
+                <span className="flex items-center gap-1.5">
+                  <Search size={12} />
+                  {filteredTransactions.length} entries
+                </span>
+                <span>
+                  Inflow{" "}
+                  <b className="number-font text-[#4c7540]">
+                    {formatMMK(rangeInflow)} MMK
+                  </b>
+                </span>
+                <span>
+                  Outflow{" "}
+                  <b className="number-font text-[#ad6749]">
+                    {formatMMK(rangeOutflow)} MMK
+                  </b>
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={exportExcel}
+                  title="Export Excel"
+                  aria-label="Export Excel"
+                  className="grid size-7 place-items-center rounded-[6px] text-[#568447] transition hover:bg-[#eef5e7]"
+                >
+                  <FileSpreadsheet size={15} />
+                </button>
+                <button
+                  onClick={exportPdf}
+                  title="Export PDF summary"
+                  aria-label="Export PDF summary"
+                  className="grid size-7 place-items-center rounded-[6px] text-[#62809a] transition hover:bg-[#edf4f8]"
+                >
+                  <FileText size={15} />
+                </button>
+                <button
+                  onClick={printThermalSlip}
+                  title="Print 80 mm slip"
+                  aria-label="Print 80 mm slip"
+                  className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] transition hover:bg-[#fbf0e7]"
+                >
+                  <Printer size={15} />
+                </button>
+              </div>
+            </div>
+            <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+              <div className="border-b border-[#edf0ec] px-4 py-3">
+                <h4 className="m-0 text-[11px] font-semibold">
+                  Daily session breakdown
+                </h4>
+                <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                  Active accounts and per-wallet reconciliation for each day in
+                  range
+                </p>
+              </div>
+              <div className="table-scroll">
+                <table className="w-full min-w-[900px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                      <th className="px-3 py-2.5">Date</th>
+                      <th className="px-3 py-2.5">Active wallet</th>
+                      <th className="px-3 py-2.5 text-right">Opening</th>
+                      <th className="px-3 py-2.5 text-right">Inflow</th>
+                      <th className="px-3 py-2.5 text-right">Outflow</th>
+                      <th className="px-3 py-2.5 text-right">System closing</th>
+                      <th className="px-3 py-2.5 text-right">Ground closing</th>
+                      <th className="px-3 py-2.5 text-right">Difference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportDailyRows.map((row) => (
+                      <tr
+                        key={`${row.date}-${row.accountId}`}
+                        className="border-b border-[#f0f2ef] last:border-0"
+                      >
+                        <td className="px-3 py-2.5 text-[9px] text-[#69766e]">
+                          {row.date}
+                        </td>
+                        <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                          <AccountBadge
+                            account={
+                              ledger.accounts.find(
+                                (account) => account.id === row.accountId,
+                              ) ?? ledger.accounts[0]
+                            }
+                          />
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {formatMMK(row.opening)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                          {formatMMK(row.inflow)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#ad6749]">
+                          {formatMMK(row.outflow)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                          {formatMMK(row.systemClosing)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {row.groundClosing == null
+                            ? "—"
+                            : formatMMK(row.groundClosing)}
+                        </td>
+                        <td
+                          className={`number-font px-3 py-2.5 text-right text-[9px] font-semibold ${row.difference == null ? "text-[#9ba59d]" : row.difference === 0 ? "text-[#4f7937]" : "text-[#b05a3b]"}`}
+                        >
+                          {row.difference == null
+                            ? "—"
+                            : `${row.difference > 0 ? "+" : ""}${formatMMK(row.difference)}`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {reportDailyRows.length === 0 && (
+                  <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                    No sessions in this date range.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+              <div className="border-b border-[#edf0ec] px-4 py-3">
+                <h4 className="m-0 text-[11px] font-semibold">
+                  Wallet-wise summary
+                </h4>
+                <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                  Net movement and earned commissions across the selected dates
+                </p>
+              </div>
+              <div className="table-scroll">
+                <table className="w-full min-w-[640px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                      <th className="px-3 py-2.5">Wallet</th>
+                      <th className="px-3 py-2.5 text-right">Opening total</th>
+                      <th className="px-3 py-2.5 text-right">Inflow</th>
+                      <th className="px-3 py-2.5 text-right">Outflow</th>
+                      <th className="px-3 py-2.5 text-right">Net volume</th>
+                      <th className="px-3 py-2.5 text-right">Commission</th>
+                      <th className="px-3 py-2.5 text-right">Latest system</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportWalletRows.map((row) => (
+                      <tr
+                        key={row.account.id}
+                        className="border-b border-[#f0f2ef] last:border-0"
+                      >
+                        <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                          <AccountBadge account={row.account} />
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {formatMMK(row.opening)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {formatMMK(row.inflow)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {formatMMK(row.outflow)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                          {formatMMK(row.net)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                          {formatMMK(row.commission)}
+                        </td>
+                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                          {formatMMK(row.closing)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {reportWalletRows.length === 0 && (
+                  <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                    No wallet activity in this date range.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="table-scroll rounded-[10px] border border-[#e4e8e3] bg-white">
+              <table className="w-full min-w-[900px] border-collapse text-left">
+                <thead>
+                  <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[9px] font-semibold uppercase tracking-[1px] text-[#929d95]">
+                    <th className="px-4 py-3 font-semibold">Date</th>
+                    <th className="px-4 py-3 font-semibold">Time</th>
+                    <th className="px-4 py-3 font-semibold">Type</th>
+                    <th className="px-4 py-3 font-semibold">Customer</th>
+                    <th className="px-4 py-3 font-semibold">
+                      Account movement
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      Amount
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">Fee</th>
+                    <th className="w-10 px-3 py-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTransactions.map((transaction) => {
+                    const Icon = kindIcons[transaction.kind];
+                    return (
+                      <tr
+                        key={transaction.id}
+                        className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"
+                      >
+                        <td className="px-4 py-3 text-[9px] text-[#77837a]">
+                          {transaction.date}
+                        </td>
+                        <td className="px-4 py-3 text-[10px] text-[#77837a]">
+                          {transaction.time}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-1 text-[9px] font-medium ${kindColors[transaction.kind]}`}
+                          >
+                            <Icon size={11} />
+                            {kindLabel(transaction.kind)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="block max-w-[145px] truncate text-[10px] font-medium text-[#37463d]">
+                            {transaction.customer || "Walk-in customer"}
+                          </span>
+                          {transaction.phone && (
+                            <span className="mt-0.5 block text-[9px] text-[#9ba59d]">
+                              {transaction.phone}
+                            </span>
+                          )}
+                          {transaction.note && (
+                            <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">
+                              {transaction.note}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-[9px] text-[#768279]">
+                          <TransactionChannels
+                            accountList={ledger.accounts}
+                            transaction={transaction}
+                          />
+                        </td>
+                        <td className="number-font px-4 py-3 text-right text-[10px] font-semibold text-[#35443a]">
+                          {formatMMK(transaction.amount)}{" "}
+                          <span className="text-[8px] font-normal text-[#a0aaa3]">
+                            MMK
+                          </span>
+                        </td>
+                        <td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">
+                          {transaction.commission ? (
+                            <span className="inline-flex flex-col items-end gap-1">
+                              <span>{formatMMK(transaction.commission)}</span>
+                              <AccountBadge
+                                account={
+                                  ledger.accounts.find(
+                                    (account) =>
+                                      account.id ===
+                                      commissionAccountId(transaction),
+                                  ) ?? ledger.accounts[0]
+                                }
+                                compact
+                              />
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          {transaction.date === activeDate && isOpen && (
+                            <div className="flex justify-end gap-1">
+                              <button
+                                onClick={() => editTransaction(transaction)}
+                                aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
+                                title="Edit transaction"
+                                className="grid size-6 place-items-center rounded-[5px] text-[#73877a] hover:bg-[#edf4e8]"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                              <button
+                                onClick={() =>
+                                  removeTransaction(transaction.id)
+                                }
+                                aria-label={`Remove ${kindLabel(transaction.kind)} transaction`}
+                                title="Remove transaction"
+                                className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {filteredTransactions.length === 0 && (
+                <div className="flex min-h-[126px] flex-col items-center justify-center px-4 text-center">
+                  <span className="grid size-8 place-items-center rounded-[8px] bg-[#f1f4ef] text-[#8a998c]">
+                    <ReceiptText size={15} />
+                  </span>
+                  <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                    No transactions in this date range
+                  </p>
+                  <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                    Entries will appear here as you record them.
+                  </p>
+                </div>
+              )}
+            </div>
           </section>
-          <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-[#e3e8e2] pt-4 text-[9px] text-[#97a199] sm:flex-row"><span>Ledger · Daily cash operations</span><span className="flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-[#a5cf73]" />Local device storage active</span></footer>
+          <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-[#e3e8e2] pt-4 text-[9px] text-[#97a199] sm:flex-row">
+            <span>Ledger · Daily cash operations</span>
+            <span className="flex items-center gap-1.5">
+              <span className="size-1.5 rounded-full bg-[#a5cf73]" />
+              Local device storage active
+            </span>
+          </footer>
         </div>
       </main>
 
-      {modal && <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><div role="dialog" aria-modal="true" aria-labelledby="session-dialog-title" className="fade-up w-full max-w-[420px] rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6">
-        <div className="mb-4 flex items-start justify-between"><div><p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">{formatDate(today, { weekday: "short", month: "short", day: "numeric" })}</p><h2 id="session-dialog-title" className="m-0 text-[17px] font-semibold tracking-[-0.4px]">{modal === "open" ? "Set opening balance" : "Close today’s session"}</h2></div><button onClick={() => setModal(null)} aria-label="Close dialog" className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"><X size={16} /></button></div>
-        {modal === "open" ? <form onSubmit={openSession}><p className="mb-4 text-[11px] leading-5 text-[#7d8980]">Count the physical cash in your drawer before taking today’s first transaction.</p><label className="field-label">Opening cash · MMK<span className="input-wrap mt-1.5"><input required autoFocus min="0" step="1" inputMode="numeric" type="number" placeholder="0" value={openingInput} onChange={(event) => setOpeningInput(event.target.value)} /></span></label><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setModal(null)} className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]">Cancel</button><button type="submit" className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"><Check size={13} />Open session</button></div></form> : <form onSubmit={closeSession}><div className="mb-4 rounded-[8px] bg-[#f4f7f1] p-3.5"><div className="flex justify-between text-[10px] text-[#738078]"><span>System closing</span><span className="number-font font-semibold text-[#35463a]">{formatMMK(systemClosing)} MMK</span></div><p className="mb-0 mt-1.5 text-[9px] leading-4 text-[#98a198]">Opening + cash-in − cash-out and expenses + commissions</p></div><label className="field-label">Actual cash counted · MMK<span className="input-wrap mt-1.5"><input required autoFocus min="0" step="1" inputMode="numeric" type="number" placeholder="0" value={closingInput} onChange={(event) => setClosingInput(event.target.value)} /></span></label>{closingInput !== "" && Number.isFinite(Number(closingInput)) && <div className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 text-[10px] ${Number(closingInput) === systemClosing ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#ae5c3e]"}`}><span className="flex items-center gap-1.5 font-semibold">{Number(closingInput) === systemClosing ? <CircleCheck size={13} /> : <CircleAlert size={13} />}{Number(closingInput) === systemClosing ? "Balanced" : "Difference from system"}</span><span className="number-font font-semibold">{Number(closingInput) - systemClosing >= 0 ? "+" : "−"}{formatMMK(Math.abs(Number(closingInput) - systemClosing))} MMK</span></div>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setModal(null)} className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]">Cancel</button><button type="submit" className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"><Check size={13} />Close day</button></div></form>}
-      </div></div>}
+      {modal === "admin" && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
+          }}
+        >
+          <form
+            onSubmit={confirmAdminUnlock}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="admin-dialog-title"
+            className="fade-up w-full max-w-[400px] rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  Admin authorization
+                </p>
+                <h2
+                  id="admin-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  {adminAction === "date"
+                    ? "Open past session"
+                    : "Reopen closed session"}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                aria-label="Close password dialog"
+                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="mb-4 text-[11px] leading-5 text-[#7d8980]">
+              Enter the admin password to unlock{" "}
+              {formatDate(pendingDate, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}{" "}
+              for editing.
+            </p>
+            <label className="field-label">
+              Admin password
+              <span className="input-wrap mt-1.5">
+                <input
+                  required
+                  autoFocus
+                  type="password"
+                  autoComplete="current-password"
+                  value={adminPassword}
+                  onChange={(event) => {
+                    setAdminPassword(event.target.value);
+                    setAdminError("");
+                  }}
+                />
+              </span>
+            </label>
+            {adminError && (
+              <p role="alert" className="mb-0 mt-2 text-[10px] text-[#b05a3b]">
+                {adminError}
+              </p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
+              >
+                <Check size={13} />
+                Unlock session
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {modal === "accounts" && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-dialog-title"
+            className="fade-up max-h-[92vh] w-full max-w-[720px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-5 flex items-start justify-between">
+              <div>
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  Workspace settings
+                </p>
+                <h2
+                  id="account-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  Wallets & accounts
+                </h2>
+                <p className="mb-0 mt-1 text-[10px] text-[#87928a]">
+                  Edit account details or archive accounts while preserving
+                  their history.
+                </p>
+              </div>
+              <button
+                onClick={() => setModal(null)}
+                aria-label="Close account settings"
+                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <form
+              onSubmit={submitAccount}
+              className="mb-5 rounded-[9px] border border-[#e4e8e3] bg-[#fafbf9] p-4"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="m-0 text-[11px] font-semibold">
+                  {editingAccountId ? "Edit account" : "Add account"}
+                </h3>
+                {editingAccountId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingAccountId(null);
+                      setAccountForm({
+                        name: "",
+                        shortName: "",
+                        kind: "wallet",
+                        accountNumber: "",
+                        color: "sky",
+                      });
+                    }}
+                    className="text-[9px] text-[#748078] underline underline-offset-2"
+                  >
+                    Cancel edit
+                  </button>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="field-label">
+                  Account name
+                  <span className="input-wrap">
+                    <input
+                      required
+                      value={accountForm.name}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g. KBZPay Main"
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Display name
+                  <span className="input-wrap">
+                    <input
+                      value={accountForm.shortName}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          shortName: event.target.value,
+                        }))
+                      }
+                      placeholder="Short label for reports"
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Account type
+                  <span className="select-wrap">
+                    <select
+                      value={accountForm.kind}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          kind: event.target.value as AccountKind,
+                        }))
+                      }
+                    >
+                      {(["cash", "wallet", "qr", "bank"] as AccountKind[]).map(
+                        (kind) => (
+                          <option key={kind} value={kind}>
+                            {kind === "qr"
+                              ? "MMQR"
+                              : kind[0].toUpperCase() + kind.slice(1)}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    <ChevronDown size={14} />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Account number{" "}
+                  <span className="optional-label">Optional</span>
+                  <span className="input-wrap">
+                    <input
+                      inputMode="text"
+                      value={accountForm.accountNumber}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          accountNumber: event.target.value,
+                        }))
+                      }
+                      placeholder="Wallet or bank account"
+                    />
+                  </span>
+                </label>
+              </div>
+              <fieldset className="mt-4 border-0 p-0">
+                <legend className="mb-2 text-[10px] font-semibold text-[#68766d]">
+                  Wallet color
+                </legend>
+                <div className="flex flex-wrap gap-2">
+                  {accountColorOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          color: option.id,
+                        }))
+                      }
+                      aria-pressed={accountForm.color === option.id}
+                      aria-label={option.name}
+                      title={option.name}
+                      className={`flex h-8 items-center gap-2 rounded-[7px] border px-2.5 text-[9px] font-medium transition ${accountForm.color === option.id ? "border-[#54764d] bg-white text-[#3d5143] ring-2 ring-[#dfead7]" : "border-[#e3e8e2] bg-white text-[#738078]"}`}
+                    >
+                      <span
+                        className="size-3 rounded-full border border-black/10"
+                        style={{ backgroundColor: option.swatch }}
+                      />
+                      {option.name}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="submit"
+                  className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
+                >
+                  <Plus size={13} />
+                  {editingAccountId ? "Save account" : "Add account"}
+                </button>
+              </div>
+            </form>
+            <div className="space-y-2">
+              {ledger.accounts.map((account) => (
+                <div
+                  key={account.id}
+                  className={`flex flex-wrap items-center gap-3 rounded-[8px] border px-3 py-2.5 ${account.deletedAt ? "border-dashed border-[#e5e9e4] bg-[#fafbf9] opacity-60" : "border-[#e5e9e4]"}`}
+                >
+                  <span
+                    className={`grid size-8 shrink-0 place-items-center rounded-[7px] text-[10px] font-bold ${accountColorBadge(account.color)}`}
+                  >
+                    {account.mark}
+                  </span>
+                  <span className="min-w-[120px] flex-1">
+                    <span className="block text-[10px] font-semibold text-[#34443b]">
+                      {account.name}
+                      {account.deletedAt && (
+                        <span className="ml-2 text-[8px] font-medium uppercase text-[#a07a5d]">
+                          Archived
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block text-[9px] text-[#8a958d]">
+                      {account.kind.toUpperCase()} ·{" "}
+                      {account.accountNumber || "No account number"}
+                    </span>
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {account.deletedAt ? (
+                      <button
+                        type="button"
+                        onClick={() => restoreAccount(account.id)}
+                        title="Restore account"
+                        aria-label={`Restore ${account.name}`}
+                        className="grid size-8 place-items-center rounded-[6px] text-[#62804f] hover:bg-[#eef5e7]"
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => editAccount(account)}
+                          title="Edit account"
+                          aria-label={`Edit ${account.name}`}
+                          className="grid size-8 place-items-center rounded-[6px] text-[#688071] hover:bg-[#f0f4ee]"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteAccount(account)}
+                          disabled={account.id === "cash-drawer"}
+                          title={
+                            account.id === "cash-drawer"
+                              ? "Cash drawer is required"
+                              : "Delete or archive account"
+                          }
+                          aria-label={`Delete ${account.name}`}
+                          className="grid size-8 place-items-center rounded-[6px] text-[#a66e5a] hover:bg-[#fff0e9] disabled:cursor-not-allowed disabled:opacity-30"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {(modal === "open" || modal === "close") && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="session-dialog-title"
+            className="fade-up w-full max-w-[420px] rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  {formatDate(activeDate, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </p>
+                <h2
+                  id="session-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  {modal === "open"
+                    ? `Edit ${formatDate(activeDate, { month: "short", day: "numeric" })} opening balances`
+                    : `Close ${formatDate(activeDate, { month: "short", day: "numeric" })} session`}
+                </h2>
+              </div>
+              <button
+                onClick={() => setModal(null)}
+                aria-label="Close dialog"
+                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {modal === "open" ? (
+              <form onSubmit={openSession}>
+                <p className="mb-4 text-[11px] leading-5 text-[#7d8980]">
+                  {todaySession
+                    ? "Update the opening balances for this session. Editing does not change any other day."
+                    : "Every account starts at zero for a new day. Select this session’s wallets and enter their counted opening balances."}
+                </p>
+                <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                  {openingAccounts.map((account) => {
+                    const selected = openingAccountIds.includes(account.id);
+                    const requiredCash = account.id === "cash-drawer";
+                    return (
+                      <div
+                        key={account.id}
+                        className="rounded-[8px] border border-[#e5e9e4] p-3"
+                      >
+                        <label className="flex items-center gap-2 text-[11px] font-medium text-[#34443b]">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={requiredCash}
+                            onChange={(event) => {
+                              setOpeningAccountIds((current) =>
+                                event.target.checked
+                                  ? [...current, account.id]
+                                  : current.filter((id) => id !== account.id),
+                              );
+                              if (event.target.checked)
+                                setOpeningAmounts((current) => ({
+                                  ...current,
+                                  [account.id]: current[account.id] ?? "0",
+                                }));
+                            }}
+                            className="accent-[#527d3a]"
+                          />
+                          <span className="flex-1">
+                            {account.name}
+                            {requiredCash ? " · required" : ""}
+                          </span>
+                          <span className="text-[9px] font-normal text-[#8c978f]">
+                            {account.kind}
+                          </span>
+                        </label>
+                        {selected && (
+                          <label className="field-label mt-2">
+                            Opening balance · MMK
+                            <span className="input-wrap">
+                              <input
+                                required
+                                min="0"
+                                step="1"
+                                inputMode="numeric"
+                                type="number"
+                                value={openingAmounts[account.id] ?? "0"}
+                                onChange={(event) =>
+                                  setOpeningAmounts((current) => ({
+                                    ...current,
+                                    [account.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModal(null)}
+                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
+                  >
+                    <Check size={13} />
+                    Open session
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={closeSession}>
+                <div className="mb-4 rounded-[8px] bg-[#f4f7f1] p-3.5">
+                  <p className="m-0 text-[10px] font-semibold text-[#35463a]">
+                    Count ground balances for each active account.
+                  </p>
+                  <p className="mb-0 mt-1.5 text-[9px] leading-4 text-[#98a198]">
+                    System closing is calculated per wallet from its opening and
+                    recorded movements.
+                  </p>
+                </div>
+                <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                  {todayActiveAccounts.map((account) => {
+                    const system = accountBalances[account.id] ?? 0;
+                    const ground = closingAmounts[account.id] ?? "";
+                    const difference =
+                      ground === "" ? null : Number(ground) - system;
+                    return (
+                      <div
+                        key={account.id}
+                        className="rounded-[8px] border border-[#e5e9e4] p-3"
+                      >
+                        <div className="mb-2 flex items-center justify-between text-[10px]">
+                          <span className="font-semibold text-[#34443b]">
+                            {account.name}
+                          </span>
+                          <span className="number-font text-[#6c7970]">
+                            System {formatMMK(system)} MMK
+                          </span>
+                        </div>
+                        <label className="field-label">
+                          Ground balance · MMK
+                          <span className="input-wrap">
+                            <input
+                              required
+                              min="0"
+                              step="1"
+                              inputMode="numeric"
+                              type="number"
+                              value={ground}
+                              onChange={(event) =>
+                                setClosingAmounts((current) => ({
+                                  ...current,
+                                  [account.id]: event.target.value,
+                                }))
+                              }
+                            />
+                          </span>
+                        </label>
+                        {difference !== null && (
+                          <div
+                            className={`mt-2 flex justify-between rounded-[6px] px-2.5 py-2 text-[9px] ${difference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#ae5c3e]"}`}
+                          >
+                            <span>
+                              {difference === 0 ? "Balanced" : "Discrepancy"}
+                            </span>
+                            <span className="number-font font-semibold">
+                              {difference > 0 ? "+" : ""}
+                              {formatMMK(difference)} MMK
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModal(null)}
+                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
+                  >
+                    <Check size={13} />
+                    Close day
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
