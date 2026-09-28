@@ -15,8 +15,6 @@ import {
   FileSpreadsheet,
   FileText,
   LayoutDashboard,
-  Landmark,
-  Menu,
   Pencil,
   Plus,
   Printer,
@@ -49,6 +47,8 @@ import {
 } from "@/lib/ledger";
 
 type ModalKind = "open" | "close" | "accounts" | "admin" | null;
+type AppTab =
+  "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
 
@@ -224,6 +224,7 @@ export default function Home() {
   const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
   const [hydrated, setHydrated] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
+  const [activeTab, setActiveTab] = useState<AppTab>("overview");
   const [adminAction, setAdminAction] = useState<AdminAction>("reopen");
   const [pendingDate, setPendingDate] = useState(today);
   const [adminPassword, setAdminPassword] = useState("");
@@ -268,7 +269,6 @@ export default function Home() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1053,7 +1053,7 @@ export default function Home() {
 
   return (
     <div className="dashboard-shell flex min-h-screen">
-      <aside className="sidebar fixed inset-y-0 left-0 z-30 hidden w-[236px] flex-col px-5 py-6 text-white lg:flex">
+      <aside className="hidden">
         <a
           href="#overview"
           className="mb-11 flex items-center gap-3 px-2 no-underline"
@@ -1144,16 +1144,9 @@ export default function Home() {
         </div>
       </aside>
 
-      <main id="overview" className="min-w-0 flex-1 lg:ml-[236px]">
+      <main className="min-w-0 flex-1">
         <header className="topbar-actions sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-[#e5e9e4] bg-[#f3f5f2]/95 px-4 backdrop-blur md:px-8">
           <div className="flex items-center gap-3">
-            <button
-              aria-label="Toggle navigation"
-              onClick={() => setMobileNavOpen(!mobileNavOpen)}
-              className="grid size-9 place-items-center rounded-[8px] border border-[#e1e6e0] bg-white text-[#34443c] lg:hidden"
-            >
-              {mobileNavOpen ? <X size={17} /> : <Menu size={17} />}
-            </button>
             <div>
               <p className="m-0 text-[10px] font-medium uppercase tracking-[1.5px] text-[#87928b]">
                 Daily operations
@@ -1163,9 +1156,12 @@ export default function Home() {
               </h1>
             </div>
           </div>
-          <div className="flex items-center gap-2.5 md:gap-4">
-            <div className="flex items-center gap-2 rounded-[7px] border border-[#e1e6e0] bg-white px-2.5 py-1.5 text-[10px] text-[#526158]">
-              <CalendarDays size={14} className="shrink-0 text-[#6e8b58]" />
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5 md:gap-4">
+            <div className="flex shrink-0 items-center gap-1 rounded-[7px] border border-[#e1e6e0] bg-white px-1.5 py-1.5 text-[10px] text-[#526158] sm:gap-2 sm:px-2.5">
+              <CalendarDays
+                size={14}
+                className="hidden shrink-0 text-[#6e8b58] min-[390px]:block"
+              />
               <span className="hidden font-medium sm:inline">Session date</span>
               <input
                 aria-label="Active session date"
@@ -1173,67 +1169,42 @@ export default function Home() {
                 value={activeDate}
                 max={today}
                 onChange={(event) => selectSessionDate(event.target.value)}
-                className="w-[112px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none"
+                className="w-[92px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[112px]"
               />
             </div>
-            <button
-              onClick={() => setModal("accounts")}
-              className="hidden h-9 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#4a5d50] sm:flex"
-            >
-              <Landmark size={14} />
-              Manage accounts
-            </button>
             {isOpen ? (
               <button
+                aria-label="Close session"
                 onClick={startClosingFlow}
-                className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
                 <span className="size-1.5 rounded-full bg-[#c6f36b]" />
-                Close session
+                <span className="hidden min-[390px]:inline">Close session</span>
               </button>
             ) : isClosed ? (
               <button
+                aria-label="Reopen or edit session"
                 onClick={() => requestAdminUnlock("reopen")}
-                className="flex h-9 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-2 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3] sm:px-3"
               >
                 <Pencil size={13} />
-                Reopen / Edit Session
+                <span className="hidden min-[420px]:inline">
+                  Reopen / Edit Session
+                </span>
               </button>
             ) : (
               <button
+                aria-label="Open session"
                 onClick={startOpeningFlow}
-                className="flex h-9 items-center gap-2 rounded-[8px] bg-[#173c31] px-3.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
                 <Plus size={15} />
-                Open session
+                <span className="hidden min-[390px]:inline">Open session</span>
               </button>
             )}
           </div>
         </header>
-        {mobileNavOpen && (
-          <nav
-            className="scrollbar-hidden flex gap-2 overflow-x-auto border-b border-[#e5e9e4] bg-white px-4 py-2.5 lg:hidden"
-            aria-label="Mobile navigation"
-          >
-            {[
-              ["#overview", "Overview"],
-              ["#transactions", "Transactions"],
-              ["#reconciliation", "Reconciliation"],
-              ["#reports", "Reports"],
-            ].map(([href, label]) => (
-              <a
-                key={href}
-                href={href}
-                onClick={() => setMobileNavOpen(false)}
-                className="whitespace-nowrap rounded-[7px] bg-[#f3f5f2] px-3 py-2 text-[11px] font-medium text-[#516057] no-underline"
-              >
-                {label}
-              </a>
-            ))}
-          </nav>
-        )}
-
-        <div className="mx-auto max-w-[1440px] px-4 pb-12 pt-6 md:px-8 md:pt-8">
+        <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
           {message && (
             <div
               role="status"
@@ -1243,1074 +1214,1243 @@ export default function Home() {
               {message}
             </div>
           )}
-          <section className="fade-up mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-            <div>
-              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-[#8b968e]">
-                {formatDate(activeDate)}
-              </p>
-              <h2 className="m-0 text-[24px] font-semibold leading-tight tracking-[-0.9px] text-[#17251f] md:text-[29px]">
-                Good day, operator<span className="text-[#87a953]">.</span>
-              </h2>
-              <p className="mb-0 mt-2 text-[12px] text-[#7b8780]">
-                Your counter at a glance. Every kyat accounted for.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 self-start rounded-[7px] border border-[#e1e6e0] bg-white px-3 py-2 text-[10px] text-[#657269] sm:self-auto">
-              <span
-                className={`size-1.5 rounded-full ${isOpen ? "bg-[#76aa42]" : isClosed ? "bg-[#87928b]" : "bg-[#efa265]"}`}
-              />
-              {isOpen
-                ? "Day is open"
-                : isClosed
-                  ? "Day is closed"
-                  : "Awaiting opening balance"}
-            </div>
-          </section>
-
-          <section className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
-            <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
-              <div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" />
-              <div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" />
-              <div className="relative flex h-full flex-col justify-between gap-8">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">
-                      Cash position · MMK
-                    </p>
-                    <p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">
-                      {formatMMK(balances["cash-drawer"])}
-                    </p>
-                    <p className="mb-0 mt-2 text-[10px] text-white/55">
-                      {isOpen
-                        ? "Live drawer balance"
-                        : isClosed
-                          ? "Final drawer balance"
-                          : "Opening balance not set"}
-                    </p>
-                  </div>
-                  <span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
-                    <WalletCards size={19} />
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5">
-                  <div className="flex gap-6">
-                    <div>
-                      <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
-                        Opening
-                      </p>
-                      <p className="number-font mb-0 mt-1 text-[12px] font-medium">
-                        {formatMMK(openingBalance)}{" "}
-                        <span className="text-[9px] text-white/45">MMK</span>
-                      </p>
-                    </div>
-                    <div>
-                      <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
-                        System close
-                      </p>
-                      <p className="number-font mb-0 mt-1 text-[12px] font-medium">
-                        {formatMMK(systemClosing)}{" "}
-                        <span className="text-[9px] text-white/45">MMK</span>
-                      </p>
-                    </div>
-                  </div>
-                  <span className="text-[9px] text-white/50">
-                    Updated just now
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="flex min-h-[212px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5 md:p-6">
-              <div className="flex items-start justify-between">
+          {activeTab === "overview" && (
+            <>
+              <section className="fade-up mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
                 <div>
-                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">
-                    Session control
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-[#8b968e]">
+                    {formatDate(activeDate)}
                   </p>
-                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.3px]">
-                    {isOpen
-                      ? "Morning session"
-                      : isClosed
-                        ? "Session complete"
-                        : "Start the day"}
-                  </h3>
+                  <h2 className="m-0 text-[24px] font-semibold leading-tight tracking-[-0.9px] text-[#17251f] md:text-[29px]">
+                    Good day, operator<span className="text-[#87a953]">.</span>
+                  </h2>
+                  <p className="mb-0 mt-2 text-[12px] text-[#7b8780]">
+                    Your counter at a glance. Every kyat accounted for.
+                  </p>
                 </div>
-                <span
-                  className={`grid size-9 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}
-                >
-                  {isOpen ? (
-                    <Clock3 size={17} />
-                  ) : isClosed ? (
-                    <Check size={17} />
-                  ) : (
-                    <Activity size={17} />
-                  )}
-                </span>
-              </div>
-              <p className="mb-4 mt-2 max-w-[320px] text-[11px] leading-5 text-[#849087]">
-                {isOpen
-                  ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.`
-                  : isClosed
-                    ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.`
-                    : "Enter the physical opening cash before you start recording today’s transactions."}
-              </p>
-              <div className="flex items-center justify-between gap-3 border-t border-[#edf0ec] pt-3.5">
-                <span className="text-[10px] text-[#87928a]">
-                  {todayTransactions.length} transaction
-                  {todayTransactions.length === 1 ? "" : "s"} today
-                </span>
-                {!todaySession && (
-                  <button
-                    onClick={startOpeningFlow}
-                    className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
-                  >
-                    Set opening balance
-                    <ArrowRight size={13} />
-                  </button>
-                )}
-                {isOpen && (
-                  <button
-                    onClick={startClosingFlow}
-                    className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
-                  >
-                    Reconcile & close
-                  </button>
-                )}
-                {isUnlocked && todaySession && (
-                  <button
-                    onClick={startOpeningFlow}
-                    className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
-                  >
-                    Edit opening balances
-                  </button>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
-            {[
-              {
-                label: "Cash-in volume",
-                amount: cashInTotal,
-                hint: "Customer deposits",
-                icon: ArrowDownLeft,
-                tone: "bg-[#eaf5de] text-[#4b7b33]",
-              },
-              {
-                label: "Cash-out volume",
-                amount: cashOutTotal,
-                hint: "Customer withdrawals",
-                icon: ArrowUpRight,
-                tone: "bg-[#fff0e8] text-[#b66343]",
-              },
-              {
-                label: "Commissions",
-                amount: commissions,
-                hint: "Fees earned today",
-                icon: TrendingUp,
-                tone: "bg-[#e6f1f8] text-[#457a9d]",
-              },
-              {
-                label: "Operating expense",
-                amount: expenseTotal,
-                hint: "Cash paid out",
-                icon: ReceiptText,
-                tone: "bg-[#f2edf5] text-[#795e85]",
-              },
-            ].map((metric) => (
-              <div
-                key={metric.label}
-                className="rounded-[10px] border border-[#e5e9e4] bg-white p-4 md:p-5"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-medium text-[#758178]">
-                    {metric.label}
-                  </span>
+                <div className="flex items-center gap-2 self-start rounded-[7px] border border-[#e1e6e0] bg-white px-3 py-2 text-[10px] text-[#657269] sm:self-auto">
                   <span
-                    className={`grid size-7 place-items-center rounded-[7px] ${metric.tone}`}
-                  >
-                    <metric.icon size={14} />
-                  </span>
+                    className={`size-1.5 rounded-full ${isOpen ? "bg-[#76aa42]" : isClosed ? "bg-[#87928b]" : "bg-[#efa265]"}`}
+                  />
+                  {isOpen
+                    ? "Day is open"
+                    : isClosed
+                      ? "Day is closed"
+                      : "Awaiting opening balance"}
                 </div>
-                <p className="number-font mb-0 mt-3 text-[19px] font-semibold tracking-[-0.6px] text-[#1c2b23] md:text-[22px]">
-                  {formatMMK(metric.amount)}{" "}
-                  <span className="text-[9px] font-medium tracking-normal text-[#98a199]">
-                    MMK
-                  </span>
-                </p>
-                <p className="mb-0 mt-1 text-[9px] text-[#98a199]">
-                  {metric.hint}
-                </p>
-              </div>
-            ))}
-          </section>
+              </section>
 
-          <section id="accounts" className="mb-7 scroll-mt-24">
-            <div className="mb-3 flex items-end justify-between">
-              <div>
-                <h3 className="m-0 text-[13px] font-semibold">
-                  Account balances
-                </h3>
-                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
-                  {todaySession
-                    ? `${todayActiveAccounts.length} active in today’s session`
-                    : "Every new session starts from manually entered balances"}
-                </p>
-              </div>
-              <button
-                onClick={() => setModal("accounts")}
-                className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#49604f]"
-              >
-                <Plus size={13} />
-                Manage accounts
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-8">
-              {accounts.map((account) => (
-                <div
-                  key={account.id}
-                  className={`min-w-0 rounded-[9px] border bg-white px-3 py-3 ${todaySession && !todaySession.activeAccountIds.includes(account.id) ? "border-dashed border-[#e5e9e4] opacity-55" : "border-[#e5e9e4]"}`}
-                >
-                  <div className="mb-3 flex items-center gap-2">
+              <section className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
+                <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
+                  <div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" />
+                  <div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" />
+                  <div className="relative flex h-full flex-col justify-between gap-8">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">
+                          Cash position · MMK
+                        </p>
+                        <p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">
+                          {formatMMK(balances["cash-drawer"])}
+                        </p>
+                        <p className="mb-0 mt-2 text-[10px] text-white/55">
+                          {isOpen
+                            ? "Live drawer balance"
+                            : isClosed
+                              ? "Final drawer balance"
+                              : "Opening balance not set"}
+                        </p>
+                      </div>
+                      <span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
+                        <WalletCards size={19} />
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5">
+                      <div className="flex gap-6">
+                        <div>
+                          <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
+                            Opening
+                          </p>
+                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
+                            {formatMMK(openingBalance)}{" "}
+                            <span className="text-[9px] text-white/45">
+                              MMK
+                            </span>
+                          </p>
+                        </div>
+                        <div>
+                          <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
+                            System close
+                          </p>
+                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
+                            {formatMMK(systemClosing)}{" "}
+                            <span className="text-[9px] text-white/45">
+                              MMK
+                            </span>
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-[9px] text-white/50">
+                        Updated just now
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex min-h-[212px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5 md:p-6">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">
+                        Session control
+                      </p>
+                      <h3 className="m-0 text-[16px] font-semibold tracking-[-0.3px]">
+                        {isOpen
+                          ? "Morning session"
+                          : isClosed
+                            ? "Session complete"
+                            : "Start the day"}
+                      </h3>
+                    </div>
                     <span
-                      className={`grid size-6 shrink-0 place-items-center rounded-[7px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
+                      className={`grid size-9 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}
                     >
-                      {account.mark}
-                    </span>
-                    <span className="truncate text-[9px] font-medium text-[#69766e]">
-                      {account.shortName}
+                      {isOpen ? (
+                        <Clock3 size={17} />
+                      ) : isClosed ? (
+                        <Check size={17} />
+                      ) : (
+                        <Activity size={17} />
+                      )}
                     </span>
                   </div>
-                  <p className="number-font m-0 truncate text-[13px] font-semibold tracking-[-0.3px] text-[#213128]">
-                    {todaySession?.activeAccountIds.includes(account.id)
-                      ? formatMMK(balances[account.id] ?? 0)
-                      : "—"}
+                  <p className="mb-4 mt-2 max-w-[320px] text-[11px] leading-5 text-[#849087]">
+                    {isOpen
+                      ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.`
+                      : isClosed
+                        ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.`
+                        : "Enter the physical opening cash before you start recording today’s transactions."}
                   </p>
-                  <p className="mb-0 mt-0.5 text-[8px] text-[#a0aaa2]">
-                    {account.accountNumber || account.kind.toUpperCase()}
+                  <div className="flex items-center justify-between gap-3 border-t border-[#edf0ec] pt-3.5">
+                    <span className="text-[10px] text-[#87928a]">
+                      {todayTransactions.length} transaction
+                      {todayTransactions.length === 1 ? "" : "s"} today
+                    </span>
+                    {!todaySession && (
+                      <button
+                        onClick={startOpeningFlow}
+                        className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
+                      >
+                        Set opening balance
+                        <ArrowRight size={13} />
+                      </button>
+                    )}
+                    {isOpen && (
+                      <button
+                        onClick={startClosingFlow}
+                        className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                      >
+                        Reconcile & close
+                      </button>
+                    )}
+                    {isUnlocked && todaySession && (
+                      <button
+                        onClick={startOpeningFlow}
+                        className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                      >
+                        Edit opening balances
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {[
+                  {
+                    label: "Cash-in volume",
+                    amount: cashInTotal,
+                    hint: "Customer deposits",
+                    icon: ArrowDownLeft,
+                    tone: "bg-[#eaf5de] text-[#4b7b33]",
+                  },
+                  {
+                    label: "Cash-out volume",
+                    amount: cashOutTotal,
+                    hint: "Customer withdrawals",
+                    icon: ArrowUpRight,
+                    tone: "bg-[#fff0e8] text-[#b66343]",
+                  },
+                  {
+                    label: "Commissions",
+                    amount: commissions,
+                    hint: "Fees earned today",
+                    icon: TrendingUp,
+                    tone: "bg-[#e6f1f8] text-[#457a9d]",
+                  },
+                  {
+                    label: "Operating expense",
+                    amount: expenseTotal,
+                    hint: "Cash paid out",
+                    icon: ReceiptText,
+                    tone: "bg-[#f2edf5] text-[#795e85]",
+                  },
+                ].map((metric) => (
+                  <div
+                    key={metric.label}
+                    className="rounded-[10px] border border-[#e5e9e4] bg-white p-4 md:p-5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-medium text-[#758178]">
+                        {metric.label}
+                      </span>
+                      <span
+                        className={`grid size-7 place-items-center rounded-[7px] ${metric.tone}`}
+                      >
+                        <metric.icon size={14} />
+                      </span>
+                    </div>
+                    <p className="number-font mb-0 mt-3 text-[19px] font-semibold tracking-[-0.6px] text-[#1c2b23] md:text-[22px]">
+                      {formatMMK(metric.amount)}{" "}
+                      <span className="text-[9px] font-medium tracking-normal text-[#98a199]">
+                        MMK
+                      </span>
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#98a199]">
+                      {metric.hint}
+                    </p>
+                  </div>
+                ))}
+              </section>
+              <section className="mb-7">
+                <div className="mb-3 flex items-end justify-between">
+                  <div>
+                    <h3 className="m-0 text-[13px] font-semibold">
+                      Quick balances
+                    </h3>
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                      {todaySession
+                        ? "Active accounts for this session"
+                        : "Session balances start at zero"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab("wallet")}
+                    className="text-[10px] font-semibold text-[#49604f] underline decoration-[#c7d3c6] underline-offset-4"
+                  >
+                    All wallets
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {(todaySession ? todayActiveAccounts : accounts)
+                    .slice(0, 4)
+                    .map((account) => (
+                      <div
+                        key={account.id}
+                        className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-3"
+                      >
+                        <AccountBadge account={account} compact />
+                        <p className="number-font mb-0 mt-2.5 truncate text-[14px] font-semibold text-[#213128]">
+                          {todaySession
+                            ? formatMMK(balances[account.id] ?? 0)
+                            : "0"}
+                          <span className="ml-1 text-[8px] font-normal text-[#98a199]">
+                            MMK
+                          </span>
+                        </p>
+                      </div>
+                    ))}
+                </div>
+              </section>
+            </>
+          )}
+          {activeTab === "wallet" && (
+            <section id="accounts" className="mb-7 scroll-mt-24">
+              <div className="mb-3 flex items-end justify-between">
+                <div>
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Account balances
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    {todaySession
+                      ? `${todayActiveAccounts.length} active in today’s session`
+                      : "Every new session starts from manually entered balances"}
                   </p>
                 </div>
-              ))}
-            </div>
-          </section>
-
-          <section id="transactions" className="mb-7 scroll-mt-24">
-            <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
-              <div>
-                <h3 className="m-0 text-[13px] font-semibold">
-                  Quick transaction
-                </h3>
-                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
-                  Capture a counter movement in a few seconds
-                </p>
+                <button
+                  onClick={() => setModal("accounts")}
+                  className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#49604f]"
+                >
+                  <Plus size={13} />
+                  Manage accounts
+                </button>
               </div>
-              {!isOpen && (
-                <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]">
-                  <CircleAlert size={13} />
-                  Open a session to enter transactions
-                </span>
-              )}
-            </div>
-            <form
-              id="transaction-entry"
-              onSubmit={addTransaction}
-              className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
-            >
-              <div
-                className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden"
-                role="tablist"
-                aria-label="Transaction type"
-              >
-                {(
-                  [
-                    "CASH_IN",
-                    "CASH_OUT",
-                    "TRANSFER",
-                    "EXPENSE",
-                  ] as TransactionKind[]
-                ).map((kind) => {
-                  const Icon = kindIcons[kind];
-                  return (
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={transactionKind === kind}
-                      key={kind}
-                      onClick={() => setTransactionKind(kind)}
-                      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
-                    >
-                      <Icon size={13} />
-                      {kindLabel(kind)}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {(transactionKind === "CASH_IN" ||
-                  transactionKind === "CASH_OUT") && (
-                  <label className="field-label">
-                    {transactionKind === "CASH_IN" ? "Received via" : "Paid to"}
-                    <AccountBadge
-                      account={
-                        transactionAccounts.find(
-                          (account) => account.id === serviceAccountId,
-                        ) ??
-                        transactionAccounts[0] ??
-                        ledger.accounts[0]
-                      }
-                      compact
-                    />
-                    <span className="select-wrap">
-                      <select
-                        value={serviceAccountId}
-                        onChange={(event) =>
-                          setServiceAccountId(event.target.value as AccountId)
-                        }
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-8">
+                {accounts.map((account) => (
+                  <div
+                    key={account.id}
+                    className={`min-w-0 rounded-[9px] border bg-white px-3 py-3 ${todaySession && !todaySession.activeAccountIds.includes(account.id) ? "border-dashed border-[#e5e9e4] opacity-55" : "border-[#e5e9e4]"}`}
+                  >
+                    <div className="mb-3 flex items-center gap-2">
+                      <span
+                        className={`grid size-6 shrink-0 place-items-center rounded-[7px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
                       >
-                        {transactionAccounts
-                          .filter((account) => account.id !== "cash-drawer")
-                          .map((account) => (
+                        {account.mark}
+                      </span>
+                      <span className="truncate text-[9px] font-medium text-[#69766e]">
+                        {account.shortName}
+                      </span>
+                    </div>
+                    <p className="number-font m-0 truncate text-[13px] font-semibold tracking-[-0.3px] text-[#213128]">
+                      {todaySession?.activeAccountIds.includes(account.id)
+                        ? formatMMK(balances[account.id] ?? 0)
+                        : "—"}
+                    </p>
+                    <p className="mb-0 mt-0.5 text-[8px] text-[#a0aaa2]">
+                      {account.accountNumber || account.kind.toUpperCase()} ·{" "}
+                      {todaySession?.activeAccountIds.includes(account.id)
+                        ? "Active today"
+                        : "Inactive today"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {activeTab === "transactions" && (
+            <section id="transactions" className="mb-7 scroll-mt-24">
+              <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+                <div>
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Quick transaction
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    Capture a counter movement in a few seconds
+                  </p>
+                </div>
+                {!isOpen && (
+                  <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]">
+                    <CircleAlert size={13} />
+                    Open a session to enter transactions
+                  </span>
+                )}
+              </div>
+              <form
+                id="transaction-entry"
+                onSubmit={addTransaction}
+                className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
+              >
+                <div
+                  className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden"
+                  role="tablist"
+                  aria-label="Transaction type"
+                >
+                  {(
+                    [
+                      "CASH_IN",
+                      "CASH_OUT",
+                      "TRANSFER",
+                      "EXPENSE",
+                    ] as TransactionKind[]
+                  ).map((kind) => {
+                    const Icon = kindIcons[kind];
+                    return (
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={transactionKind === kind}
+                        key={kind}
+                        onClick={() => setTransactionKind(kind)}
+                        className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
+                      >
+                        <Icon size={13} />
+                        {kindLabel(kind)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {(transactionKind === "CASH_IN" ||
+                    transactionKind === "CASH_OUT") && (
+                    <label className="field-label">
+                      {transactionKind === "CASH_IN"
+                        ? "Received via"
+                        : "Paid to"}
+                      <AccountBadge
+                        account={
+                          transactionAccounts.find(
+                            (account) => account.id === serviceAccountId,
+                          ) ??
+                          transactionAccounts[0] ??
+                          ledger.accounts[0]
+                        }
+                        compact
+                      />
+                      <span className="select-wrap">
+                        <select
+                          value={serviceAccountId}
+                          onChange={(event) =>
+                            setServiceAccountId(event.target.value as AccountId)
+                          }
+                        >
+                          {transactionAccounts
+                            .filter((account) => account.id !== "cash-drawer")
+                            .map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
+                        </select>
+                        <ChevronDown size={14} />
+                      </span>
+                    </label>
+                  )}
+                  {transactionKind === "TRANSFER" && (
+                    <>
+                      <label className="field-label">
+                        From account
+                        <AccountBadge
+                          account={
+                            transactionAccounts.find(
+                              (account) => account.id === fromAccountId,
+                            ) ??
+                            transactionAccounts[0] ??
+                            ledger.accounts[0]
+                          }
+                          compact
+                        />
+                        <span className="select-wrap">
+                          <select
+                            value={fromAccountId}
+                            onChange={(event) =>
+                              setFromAccountId(event.target.value as AccountId)
+                            }
+                          >
+                            {transactionAccounts
+                              .filter((account) => account.id !== "cash-drawer")
+                              .map((account) => (
+                                <option key={account.id} value={account.id}>
+                                  {account.name}
+                                </option>
+                              ))}
+                          </select>
+                          <ChevronDown size={14} />
+                        </span>
+                      </label>
+                      <label className="field-label">
+                        To account
+                        <AccountBadge
+                          account={
+                            transactionAccounts.find(
+                              (account) => account.id === toAccountId,
+                            ) ??
+                            transactionAccounts[0] ??
+                            ledger.accounts[0]
+                          }
+                          compact
+                        />
+                        <span className="select-wrap">
+                          <select
+                            value={toAccountId}
+                            onChange={(event) =>
+                              setToAccountId(event.target.value as AccountId)
+                            }
+                          >
+                            {transactionAccounts
+                              .filter((account) => account.id !== "cash-drawer")
+                              .map((account) => (
+                                <option key={account.id} value={account.id}>
+                                  {account.name}
+                                </option>
+                              ))}
+                          </select>
+                          <ChevronDown size={14} />
+                        </span>
+                      </label>
+                    </>
+                  )}
+                  {transactionKind === "EXPENSE" && (
+                    <label className="field-label">
+                      Paid from
+                      <span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
+                        Cash in drawer
+                      </span>
+                    </label>
+                  )}
+                  <label className="field-label">
+                    Amount · MMK
+                    <span className="input-wrap">
+                      <input
+                        required
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        type="number"
+                        placeholder="0"
+                        value={amountInput}
+                        onChange={(event) => setAmountInput(event.target.value)}
+                      />
+                    </span>
+                  </label>
+                  <label className="field-label">
+                    Commission · MMK
+                    <span className="input-wrap">
+                      <input
+                        min="0"
+                        step="1"
+                        inputMode="numeric"
+                        type="number"
+                        placeholder="0"
+                        value={commissionInput}
+                        onChange={(event) =>
+                          setCommissionInput(event.target.value)
+                        }
+                      />
+                    </span>
+                  </label>
+                  {Number(commissionInput) > 0 && (
+                    <label className="field-label">
+                      Commission Received In
+                      <span className="select-wrap">
+                        <select
+                          value={commissionDestinationId}
+                          onChange={(event) =>
+                            setCommissionDestinationId(event.target.value)
+                          }
+                        >
+                          <option value="cash-drawer">
+                            Cash Drawer (ငွေသားထဲတိုးမည်)
+                          </option>
+                          <option value="related">
+                            Source/Target Wallet (သက်ဆိုင်ရာ Wallet/Account
+                            ထဲတိုးမည်)
+                          </option>
+                          {transactionAccounts.map((account) => (
                             <option key={account.id} value={account.id}>
                               {account.name}
                             </option>
                           ))}
-                      </select>
-                      <ChevronDown size={14} />
-                    </span>
-                  </label>
-                )}
-                {transactionKind === "TRANSFER" && (
-                  <>
-                    <label className="field-label">
-                      From account
-                      <AccountBadge
-                        account={
-                          transactionAccounts.find(
-                            (account) => account.id === fromAccountId,
-                          ) ??
-                          transactionAccounts[0] ??
-                          ledger.accounts[0]
-                        }
-                        compact
-                      />
-                      <span className="select-wrap">
-                        <select
-                          value={fromAccountId}
-                          onChange={(event) =>
-                            setFromAccountId(event.target.value as AccountId)
-                          }
-                        >
-                          {transactionAccounts
-                            .filter((account) => account.id !== "cash-drawer")
-                            .map((account) => (
-                              <option key={account.id} value={account.id}>
-                                {account.name}
-                              </option>
-                            ))}
                         </select>
                         <ChevronDown size={14} />
                       </span>
                     </label>
-                    <label className="field-label">
-                      To account
-                      <AccountBadge
-                        account={
-                          transactionAccounts.find(
-                            (account) => account.id === toAccountId,
-                          ) ??
-                          transactionAccounts[0] ??
-                          ledger.accounts[0]
-                        }
-                        compact
-                      />
-                      <span className="select-wrap">
-                        <select
-                          value={toAccountId}
-                          onChange={(event) =>
-                            setToAccountId(event.target.value as AccountId)
-                          }
-                        >
-                          {transactionAccounts
-                            .filter((account) => account.id !== "cash-drawer")
-                            .map((account) => (
-                              <option key={account.id} value={account.id}>
-                                {account.name}
-                              </option>
-                            ))}
-                        </select>
-                        <ChevronDown size={14} />
-                      </span>
-                    </label>
-                  </>
-                )}
-                {transactionKind === "EXPENSE" && (
-                  <label className="field-label">
-                    Paid from
-                    <span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
-                      Cash in drawer
-                    </span>
-                  </label>
-                )}
-                <label className="field-label">
-                  Amount · MMK
-                  <span className="input-wrap">
-                    <input
-                      required
-                      min="1"
-                      step="1"
-                      inputMode="numeric"
-                      type="number"
-                      placeholder="0"
-                      value={amountInput}
-                      onChange={(event) => setAmountInput(event.target.value)}
-                    />
-                  </span>
-                </label>
-                <label className="field-label">
-                  Commission · MMK
-                  <span className="input-wrap">
-                    <input
-                      min="0"
-                      step="1"
-                      inputMode="numeric"
-                      type="number"
-                      placeholder="0"
-                      value={commissionInput}
-                      onChange={(event) =>
-                        setCommissionInput(event.target.value)
-                      }
-                    />
-                  </span>
-                </label>
-                {Number(commissionInput) > 0 && (
-                  <label className="field-label">
-                    Commission Received In
-                    <span className="select-wrap">
-                      <select
-                        value={commissionDestinationId}
-                        onChange={(event) =>
-                          setCommissionDestinationId(event.target.value)
-                        }
-                      >
-                        <option value="cash-drawer">
-                          Cash Drawer (ငွေသားထဲတိုးမည်)
-                        </option>
-                        <option value="related">
-                          Source/Target Wallet (သက်ဆိုင်ရာ Wallet/Account
-                          ထဲတိုးမည်)
-                        </option>
-                        {transactionAccounts.map((account) => (
-                          <option key={account.id} value={account.id}>
-                            {account.name}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown size={14} />
-                    </span>
-                  </label>
-                )}
-                <label className="field-label">
-                  Customer name <span className="optional-label">Optional</span>
-                  <span className="input-wrap">
-                    <input
-                      autoComplete="name"
-                      placeholder="Name at counter"
-                      value={customerInput}
-                      onChange={(event) => setCustomerInput(event.target.value)}
-                    />
-                  </span>
-                </label>
-                <label className="field-label">
-                  Phone number <span className="optional-label">Optional</span>
-                  <span className="input-wrap">
-                    <input
-                      autoComplete="tel"
-                      inputMode="tel"
-                      placeholder="09 xxx xxx xxx"
-                      value={phoneInput}
-                      onChange={(event) => setPhoneInput(event.target.value)}
-                    />
-                  </span>
-                </label>
-                <label className="field-label sm:col-span-2">
-                  Note <span className="optional-label">Optional</span>
-                  <span className="input-wrap">
-                    <input
-                      placeholder="Reference or short note"
-                      value={noteInput}
-                      onChange={(event) => setNoteInput(event.target.value)}
-                    />
-                  </span>
-                </label>
-              </div>
-              <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
-                <span className="text-[9px] text-[#99a39b]">
-                  Transactions are saved in this browser on this device.
-                </span>
-                <button
-                  disabled={!isOpen}
-                  type="submit"
-                  className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {editingTransactionId ? (
-                    <Check size={14} />
-                  ) : (
-                    <Plus size={14} />
                   )}
-                  {editingTransactionId ? "Save changes" : "Add transaction"}
-                </button>
-                {editingTransactionId && (
+                  <label className="field-label">
+                    Customer name{" "}
+                    <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
+                      <input
+                        autoComplete="name"
+                        placeholder="Name at counter"
+                        value={customerInput}
+                        onChange={(event) =>
+                          setCustomerInput(event.target.value)
+                        }
+                      />
+                    </span>
+                  </label>
+                  <label className="field-label">
+                    Phone number{" "}
+                    <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
+                      <input
+                        autoComplete="tel"
+                        inputMode="tel"
+                        placeholder="09 xxx xxx xxx"
+                        value={phoneInput}
+                        onChange={(event) => setPhoneInput(event.target.value)}
+                      />
+                    </span>
+                  </label>
+                  <label className="field-label sm:col-span-2">
+                    Note <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
+                      <input
+                        placeholder="Reference or short note"
+                        value={noteInput}
+                        onChange={(event) => setNoteInput(event.target.value)}
+                      />
+                    </span>
+                  </label>
+                </div>
+                <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
+                  <span className="text-[9px] text-[#99a39b]">
+                    Transactions are saved in this browser on this device.
+                  </span>
                   <button
-                    type="button"
-                    onClick={() => {
-                      setEditingTransactionId(null);
-                      setAmountInput("");
-                      setCommissionInput("");
-                      setCustomerInput("");
-                      setPhoneInput("");
-                      setNoteInput("");
-                    }}
-                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3 text-[10px] font-medium text-[#6d7971]"
+                    disabled={!isOpen}
+                    type="submit"
+                    className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
                   >
-                    Cancel edit
+                    {editingTransactionId ? (
+                      <Check size={14} />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                    {editingTransactionId ? "Save changes" : "Add transaction"}
+                  </button>
+                  {editingTransactionId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingTransactionId(null);
+                        setAmountInput("");
+                        setCommissionInput("");
+                        setCustomerInput("");
+                        setPhoneInput("");
+                        setNoteInput("");
+                      }}
+                      className="h-9 rounded-[7px] border border-[#e3e8e2] px-3 text-[10px] font-medium text-[#6d7971]"
+                    >
+                      Cancel edit
+                    </button>
+                  )}
+                </div>
+              </form>
+              <div className="mt-4 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="flex items-center justify-between border-b border-[#edf0ec] px-4 py-3">
+                  <div>
+                    <h3 className="m-0 text-[12px] font-semibold">
+                      Session transactions
+                    </h3>
+                    <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                      {todayTransactions.length} records ·{" "}
+                      {formatDate(activeDate, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </p>
+                  </div>
+                </div>
+                {todayTransactions.length ? (
+                  <div className="divide-y divide-[#edf0ec]">
+                    {todayTransactions.map((transaction) => (
+                      <div
+                        key={transaction.id}
+                        className="flex items-center gap-3 px-3.5 py-3"
+                      >
+                        <span
+                          className={`grid size-8 shrink-0 place-items-center rounded-[8px] ${kindColors[transaction.kind]}`}
+                        >
+                          <span className="text-[11px] font-semibold">
+                            {transaction.kind === "CASH_IN"
+                              ? "↓"
+                              : transaction.kind === "CASH_OUT"
+                                ? "↑"
+                                : transaction.kind === "TRANSFER"
+                                  ? "↔"
+                                  : "−"}
+                          </span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="m-0 truncate text-[10px] font-semibold text-[#34443b]">
+                            {transaction.customer ||
+                              kindLabel(transaction.kind)}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-[#89948c]">
+                            <span>{transaction.time}</span>
+                            <TransactionChannels
+                              accountList={ledger.accounts}
+                              transaction={transaction}
+                            />
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="number-font m-0 text-[10px] font-semibold">
+                            {formatMMK(transaction.amount)}
+                          </p>
+                          {transaction.commission > 0 && (
+                            <p className="number-font mb-0 mt-1 text-[8px] text-[#71816f]">
+                              Fee {formatMMK(transaction.commission)}
+                            </p>
+                          )}
+                        </div>
+                        {isOpen && (
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => editTransaction(transaction)}
+                              aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
+                              className="grid size-7 place-items-center rounded-[6px] text-[#73877a] hover:bg-[#edf4e8]"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              onClick={() => removeTransaction(transaction.id)}
+                              aria-label={`Delete ${kindLabel(transaction.kind)} transaction`}
+                              className="grid size-7 place-items-center rounded-[6px] text-[#a36e5a] hover:bg-[#fff0e9]"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-4 py-9 text-center">
+                    <ReceiptText size={18} className="mx-auto text-[#a0aaa3]" />
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      No transactions in this session
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      New entries will appear here.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {activeTab === "reconciliation" && (
+            <section className="mb-7 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <div
+                id="reconciliation"
+                className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="m-0 text-[13px] font-semibold">
+                      Evening reconciliation
+                    </h3>
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                      {formatDate(activeDate, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}{" "}
+                      · active accounts
+                    </p>
+                  </div>
+                  <span className="grid size-8 place-items-center rounded-[7px] bg-[#eef5e7] text-[#6a913f]">
+                    <CircleCheck size={16} />
+                  </span>
+                </div>
+                <div className="overflow-hidden rounded-[8px] border border-[#edf0ec]">
+                  {[
+                    ["Opening balance", openingBalance, "#"],
+                    ["Cash-in", cashInTotal, "+"],
+                    ["Cash-out & expenses", cashOutTotal + expenseTotal, "−"],
+                    ["Commissions", commissions, "+"],
+                  ].map(([label, amount, sign]) => (
+                    <div
+                      key={label}
+                      className="flex items-center justify-between border-b border-[#edf0ec] px-3.5 py-2.5 last:border-0"
+                    >
+                      <span className="text-[10px] text-[#758178]">
+                        {label}
+                      </span>
+                      <span className="number-font text-[10px] font-medium text-[#3a4940]">
+                        {sign === "#" ? "" : sign}
+                        {formatMMK(Number(amount))}{" "}
+                        <span className="text-[8px] text-[#a0aaa2]">MMK</span>
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between bg-[#f4f7f1] px-3.5 py-3">
+                    <span className="text-[10px] font-semibold text-[#304439]">
+                      System closing
+                    </span>
+                    <span className="number-font text-[13px] font-semibold text-[#21392b]">
+                      {formatMMK(systemClosing)}{" "}
+                      <span className="text-[8px] font-medium">MMK</span>
+                    </span>
+                  </div>
+                </div>
+                {todaySession?.closingBalance != null && (
+                  <div
+                    className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}
+                  >
+                    <span className="flex items-center gap-1.5 text-[10px] font-semibold">
+                      {closingDifference === 0 ? (
+                        <CircleCheck size={13} />
+                      ) : (
+                        <CircleAlert size={13} />
+                      )}
+                      {closingDifference === 0 ? "Balanced" : "Discrepancy"}
+                      <span className="font-normal opacity-70">
+                        · actual {formatMMK(todaySession.closingBalance)} MMK
+                      </span>
+                    </span>
+                    <span className="number-font text-[11px] font-semibold">
+                      {closingDifference === 0
+                        ? "0"
+                        : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))}`}{" "}
+                      MMK
+                    </span>
+                  </div>
+                )}
+                {isOpen && (
+                  <button
+                    onClick={startClosingFlow}
+                    className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                  >
+                    <Check size={14} />
+                    Enter actual cash & close
+                  </button>
+                )}
+                {!todaySession && (
+                  <button
+                    onClick={startOpeningFlow}
+                    className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                  >
+                    <Plus size={14} />
+                    Open session to begin
                   </button>
                 )}
               </div>
-            </form>
-          </section>
-
-          <section className="mb-7 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div
-              id="reconciliation"
-              className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
-            >
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="m-0 text-[13px] font-semibold">
-                    Evening reconciliation
-                  </h3>
-                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
-                    {formatDate(activeDate, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}{" "}
-                    · active accounts
-                  </p>
-                </div>
-                <span className="grid size-8 place-items-center rounded-[7px] bg-[#eef5e7] text-[#6a913f]">
-                  <CircleCheck size={16} />
-                </span>
-              </div>
-              <div className="overflow-hidden rounded-[8px] border border-[#edf0ec]">
-                {[
-                  ["Opening balance", openingBalance, "#"],
-                  ["Cash-in", cashInTotal, "+"],
-                  ["Cash-out & expenses", cashOutTotal + expenseTotal, "−"],
-                  ["Commissions", commissions, "+"],
-                ].map(([label, amount, sign]) => (
-                  <div
-                    key={label}
-                    className="flex items-center justify-between border-b border-[#edf0ec] px-3.5 py-2.5 last:border-0"
-                  >
-                    <span className="text-[10px] text-[#758178]">{label}</span>
-                    <span className="number-font text-[10px] font-medium text-[#3a4940]">
-                      {sign === "#" ? "" : sign}
-                      {formatMMK(Number(amount))}{" "}
-                      <span className="text-[8px] text-[#a0aaa2]">MMK</span>
-                    </span>
+              <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5">
+                <div className="mb-4 flex items-start justify-between">
+                  <div>
+                    <h3 className="m-0 text-[13px] font-semibold">
+                      Session activity
+                    </h3>
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                      Account movement in the session
+                    </p>
                   </div>
-                ))}
-                <div className="flex items-center justify-between bg-[#f4f7f1] px-3.5 py-3">
-                  <span className="text-[10px] font-semibold text-[#304439]">
-                    System closing
-                  </span>
-                  <span className="number-font text-[13px] font-semibold text-[#21392b]">
-                    {formatMMK(systemClosing)}{" "}
-                    <span className="text-[8px] font-medium">MMK</span>
+                  <span className="text-[9px] text-[#929d94]">
+                    {todayTransactions.length} records
                   </span>
                 </div>
-              </div>
-              {todaySession?.closingBalance != null && (
-                <div
-                  className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}
-                >
-                  <span className="flex items-center gap-1.5 text-[10px] font-semibold">
-                    {closingDifference === 0 ? (
-                      <CircleCheck size={13} />
-                    ) : (
-                      <CircleAlert size={13} />
-                    )}
-                    {closingDifference === 0 ? "Balanced" : "Discrepancy"}
-                    <span className="font-normal opacity-70">
-                      · actual {formatMMK(todaySession.closingBalance)} MMK
-                    </span>
-                  </span>
-                  <span className="number-font text-[11px] font-semibold">
-                    {closingDifference === 0
-                      ? "0"
-                      : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))}`}{" "}
-                    MMK
-                  </span>
-                </div>
-              )}
-              {isOpen && (
-                <button
-                  onClick={startClosingFlow}
-                  className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
-                >
-                  <Check size={14} />
-                  Enter actual cash & close
-                </button>
-              )}
-              {!todaySession && (
-                <button
-                  onClick={startOpeningFlow}
-                  className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
-                >
-                  <Plus size={14} />
-                  Open session to begin
-                </button>
-              )}
-            </div>
-            <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5">
-              <div className="mb-4 flex items-start justify-between">
-                <div>
-                  <h3 className="m-0 text-[13px] font-semibold">
-                    Session activity
-                  </h3>
-                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
-                    Account movement in the session
-                  </p>
-                </div>
-                <span className="text-[9px] text-[#929d94]">
-                  {todayTransactions.length} records
-                </span>
-              </div>
-              <div className="space-y-3.5">
-                {[
-                  {
-                    label: "Cash received",
-                    value: cashInTotal,
-                    icon: ArrowDownLeft,
-                    color: "text-[#608c3f]",
-                    percent: systemClosing
-                      ? Math.min(
-                          (cashInTotal / Math.abs(systemClosing || 1)) * 100,
-                          100,
-                        )
-                      : 0,
-                  },
-                  {
-                    label: "Cash paid out",
-                    value: cashOutTotal + expenseTotal,
-                    icon: ArrowUpRight,
-                    color: "text-[#bc7452]",
-                    percent: systemClosing
-                      ? Math.min(
-                          ((cashOutTotal + expenseTotal) /
-                            Math.abs(systemClosing || 1)) *
+                <div className="space-y-3.5">
+                  {[
+                    {
+                      label: "Cash received",
+                      value: cashInTotal,
+                      icon: ArrowDownLeft,
+                      color: "text-[#608c3f]",
+                      percent: systemClosing
+                        ? Math.min(
+                            (cashInTotal / Math.abs(systemClosing || 1)) * 100,
                             100,
-                          100,
-                        )
-                      : 0,
-                  },
-                  {
-                    label: "Fees earned",
-                    value: commissions,
-                    icon: TrendingUp,
-                    color: "text-[#5282a0]",
-                    percent: systemClosing
-                      ? Math.min(
-                          (commissions / Math.abs(systemClosing || 1)) * 100,
-                          100,
-                        )
-                      : 0,
-                  },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5 text-[10px] text-[#6f7b73]">
-                        <item.icon size={13} className={item.color} />
-                        {item.label}
-                      </span>
-                      <span className="number-font text-[10px] font-semibold">
-                        {formatMMK(item.value)}{" "}
-                        <span className="text-[8px] font-normal text-[#9ba59d]">
-                          MMK
+                          )
+                        : 0,
+                    },
+                    {
+                      label: "Cash paid out",
+                      value: cashOutTotal + expenseTotal,
+                      icon: ArrowUpRight,
+                      color: "text-[#bc7452]",
+                      percent: systemClosing
+                        ? Math.min(
+                            ((cashOutTotal + expenseTotal) /
+                              Math.abs(systemClosing || 1)) *
+                              100,
+                            100,
+                          )
+                        : 0,
+                    },
+                    {
+                      label: "Fees earned",
+                      value: commissions,
+                      icon: TrendingUp,
+                      color: "text-[#5282a0]",
+                      percent: systemClosing
+                        ? Math.min(
+                            (commissions / Math.abs(systemClosing || 1)) * 100,
+                            100,
+                          )
+                        : 0,
+                    },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-[10px] text-[#6f7b73]">
+                          <item.icon size={13} className={item.color} />
+                          {item.label}
                         </span>
-                      </span>
-                    </div>
-                    <div className="h-[5px] overflow-hidden rounded-full bg-[#f0f2ef]">
-                      <div
-                        className={`h-full rounded-full ${item.label === "Cash received" ? "bg-[#a9d47a]" : item.label === "Cash paid out" ? "bg-[#efb088]" : "bg-[#9bc9eb]"}`}
-                        style={{ width: `${item.percent}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 flex items-center justify-between border-t border-[#edf0ec] pt-3">
-                <span className="flex items-center gap-1.5 text-[9px] text-[#89948c]">
-                  <Activity size={12} />
-                  Net drawer change
-                </span>
-                <span className="number-font text-[11px] font-semibold">
-                  {systemClosing - openingBalance >= 0 ? "+" : "−"}
-                  {formatMMK(Math.abs(systemClosing - openingBalance))}{" "}
-                  <span className="text-[8px] font-normal text-[#9ba59d]">
-                    MMK
-                  </span>
-                </span>
-              </div>
-            </div>
-          </section>
-
-          <section id="reports" className="scroll-mt-24">
-            <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-              <div>
-                <h3 className="m-0 text-[13px] font-semibold">
-                  Transaction register
-                </h3>
-                <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
-                  Search the ledger by date and export a statement
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
-                  <span className="text-[9px] text-[#87928a]">From</span>
-                  <input
-                    aria-label="Start date"
-                    type="date"
-                    value={dateFrom}
-                    onChange={(event) => setDateFrom(event.target.value)}
-                    className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
-                  />
-                </label>
-                <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
-                  <span className="text-[9px] text-[#87928a]">To</span>
-                  <input
-                    aria-label="End date"
-                    type="date"
-                    value={dateTo}
-                    onChange={(event) => setDateTo(event.target.value)}
-                    className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
-                  />
-                </label>
-              </div>
-            </div>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2.5">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] text-[#78847c]">
-                <span className="flex items-center gap-1.5">
-                  <Search size={12} />
-                  {filteredTransactions.length} entries
-                </span>
-                <span>
-                  Inflow{" "}
-                  <b className="number-font text-[#4c7540]">
-                    {formatMMK(rangeInflow)} MMK
-                  </b>
-                </span>
-                <span>
-                  Outflow{" "}
-                  <b className="number-font text-[#ad6749]">
-                    {formatMMK(rangeOutflow)} MMK
-                  </b>
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={exportExcel}
-                  title="Export Excel"
-                  aria-label="Export Excel"
-                  className="grid size-7 place-items-center rounded-[6px] text-[#568447] transition hover:bg-[#eef5e7]"
-                >
-                  <FileSpreadsheet size={15} />
-                </button>
-                <button
-                  onClick={exportPdf}
-                  title="Export PDF summary"
-                  aria-label="Export PDF summary"
-                  className="grid size-7 place-items-center rounded-[6px] text-[#62809a] transition hover:bg-[#edf4f8]"
-                >
-                  <FileText size={15} />
-                </button>
-                <button
-                  onClick={printThermalSlip}
-                  title="Print 80 mm slip"
-                  aria-label="Print 80 mm slip"
-                  className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] transition hover:bg-[#fbf0e7]"
-                >
-                  <Printer size={15} />
-                </button>
-              </div>
-            </div>
-            <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
-              <div className="border-b border-[#edf0ec] px-4 py-3">
-                <h4 className="m-0 text-[11px] font-semibold">
-                  Daily session breakdown
-                </h4>
-                <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
-                  Active accounts and per-wallet reconciliation for each day in
-                  range
-                </p>
-              </div>
-              <div className="table-scroll">
-                <table className="w-full min-w-[900px] border-collapse text-left">
-                  <thead>
-                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
-                      <th className="px-3 py-2.5">Date</th>
-                      <th className="px-3 py-2.5">Active wallet</th>
-                      <th className="px-3 py-2.5 text-right">Opening</th>
-                      <th className="px-3 py-2.5 text-right">Inflow</th>
-                      <th className="px-3 py-2.5 text-right">Outflow</th>
-                      <th className="px-3 py-2.5 text-right">System closing</th>
-                      <th className="px-3 py-2.5 text-right">Ground closing</th>
-                      <th className="px-3 py-2.5 text-right">Difference</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportDailyRows.map((row) => (
-                      <tr
-                        key={`${row.date}-${row.accountId}`}
-                        className="border-b border-[#f0f2ef] last:border-0"
-                      >
-                        <td className="px-3 py-2.5 text-[9px] text-[#69766e]">
-                          {row.date}
-                        </td>
-                        <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
-                          <AccountBadge
-                            account={
-                              ledger.accounts.find(
-                                (account) => account.id === row.accountId,
-                              ) ?? ledger.accounts[0]
-                            }
-                          />
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {formatMMK(row.opening)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
-                          {formatMMK(row.inflow)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#ad6749]">
-                          {formatMMK(row.outflow)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
-                          {formatMMK(row.systemClosing)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {row.groundClosing == null
-                            ? "—"
-                            : formatMMK(row.groundClosing)}
-                        </td>
-                        <td
-                          className={`number-font px-3 py-2.5 text-right text-[9px] font-semibold ${row.difference == null ? "text-[#9ba59d]" : row.difference === 0 ? "text-[#4f7937]" : "text-[#b05a3b]"}`}
-                        >
-                          {row.difference == null
-                            ? "—"
-                            : `${row.difference > 0 ? "+" : ""}${formatMMK(row.difference)}`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {reportDailyRows.length === 0 && (
-                  <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
-                    No sessions in this date range.
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
-              <div className="border-b border-[#edf0ec] px-4 py-3">
-                <h4 className="m-0 text-[11px] font-semibold">
-                  Wallet-wise summary
-                </h4>
-                <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
-                  Net movement and earned commissions across the selected dates
-                </p>
-              </div>
-              <div className="table-scroll">
-                <table className="w-full min-w-[640px] border-collapse text-left">
-                  <thead>
-                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
-                      <th className="px-3 py-2.5">Wallet</th>
-                      <th className="px-3 py-2.5 text-right">Opening total</th>
-                      <th className="px-3 py-2.5 text-right">Inflow</th>
-                      <th className="px-3 py-2.5 text-right">Outflow</th>
-                      <th className="px-3 py-2.5 text-right">Net volume</th>
-                      <th className="px-3 py-2.5 text-right">Commission</th>
-                      <th className="px-3 py-2.5 text-right">Latest system</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportWalletRows.map((row) => (
-                      <tr
-                        key={row.account.id}
-                        className="border-b border-[#f0f2ef] last:border-0"
-                      >
-                        <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
-                          <AccountBadge account={row.account} />
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {formatMMK(row.opening)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {formatMMK(row.inflow)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {formatMMK(row.outflow)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
-                          {formatMMK(row.net)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
-                          {formatMMK(row.commission)}
-                        </td>
-                        <td className="number-font px-3 py-2.5 text-right text-[9px]">
-                          {formatMMK(row.closing)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {reportWalletRows.length === 0 && (
-                  <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
-                    No wallet activity in this date range.
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="table-scroll rounded-[10px] border border-[#e4e8e3] bg-white">
-              <table className="w-full min-w-[900px] border-collapse text-left">
-                <thead>
-                  <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[9px] font-semibold uppercase tracking-[1px] text-[#929d95]">
-                    <th className="px-4 py-3 font-semibold">Date</th>
-                    <th className="px-4 py-3 font-semibold">Time</th>
-                    <th className="px-4 py-3 font-semibold">Type</th>
-                    <th className="px-4 py-3 font-semibold">Customer</th>
-                    <th className="px-4 py-3 font-semibold">
-                      Account movement
-                    </th>
-                    <th className="px-4 py-3 text-right font-semibold">
-                      Amount
-                    </th>
-                    <th className="px-4 py-3 text-right font-semibold">Fee</th>
-                    <th className="w-10 px-3 py-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredTransactions.map((transaction) => {
-                    const Icon = kindIcons[transaction.kind];
-                    return (
-                      <tr
-                        key={transaction.id}
-                        className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"
-                      >
-                        <td className="px-4 py-3 text-[9px] text-[#77837a]">
-                          {transaction.date}
-                        </td>
-                        <td className="px-4 py-3 text-[10px] text-[#77837a]">
-                          {transaction.time}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-1 text-[9px] font-medium ${kindColors[transaction.kind]}`}
-                          >
-                            <Icon size={11} />
-                            {kindLabel(transaction.kind)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="block max-w-[145px] truncate text-[10px] font-medium text-[#37463d]">
-                            {transaction.customer || "Walk-in customer"}
-                          </span>
-                          {transaction.phone && (
-                            <span className="mt-0.5 block text-[9px] text-[#9ba59d]">
-                              {transaction.phone}
-                            </span>
-                          )}
-                          {transaction.note && (
-                            <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">
-                              {transaction.note}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-[9px] text-[#768279]">
-                          <TransactionChannels
-                            accountList={ledger.accounts}
-                            transaction={transaction}
-                          />
-                        </td>
-                        <td className="number-font px-4 py-3 text-right text-[10px] font-semibold text-[#35443a]">
-                          {formatMMK(transaction.amount)}{" "}
-                          <span className="text-[8px] font-normal text-[#a0aaa3]">
+                        <span className="number-font text-[10px] font-semibold">
+                          {formatMMK(item.value)}{" "}
+                          <span className="text-[8px] font-normal text-[#9ba59d]">
                             MMK
                           </span>
-                        </td>
-                        <td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">
-                          {transaction.commission ? (
-                            <span className="inline-flex flex-col items-end gap-1">
-                              <span>{formatMMK(transaction.commission)}</span>
-                              <AccountBadge
-                                account={
-                                  ledger.accounts.find(
-                                    (account) =>
-                                      account.id ===
-                                      commissionAccountId(transaction),
-                                  ) ?? ledger.accounts[0]
-                                }
-                                compact
-                              />
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          {transaction.date === activeDate && isOpen && (
-                            <div className="flex justify-end gap-1">
-                              <button
-                                onClick={() => editTransaction(transaction)}
-                                aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
-                                title="Edit transaction"
-                                className="grid size-6 place-items-center rounded-[5px] text-[#73877a] hover:bg-[#edf4e8]"
-                              >
-                                <Pencil size={12} />
-                              </button>
-                              <button
-                                onClick={() =>
-                                  removeTransaction(transaction.id)
-                                }
-                                aria-label={`Remove ${kindLabel(transaction.kind)} transaction`}
-                                title="Remove transaction"
-                                className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
-                              >
-                                <X size={13} />
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {filteredTransactions.length === 0 && (
-                <div className="flex min-h-[126px] flex-col items-center justify-center px-4 text-center">
-                  <span className="grid size-8 place-items-center rounded-[8px] bg-[#f1f4ef] text-[#8a998c]">
-                    <ReceiptText size={15} />
+                        </span>
+                      </div>
+                      <div className="h-[5px] overflow-hidden rounded-full bg-[#f0f2ef]">
+                        <div
+                          className={`h-full rounded-full ${item.label === "Cash received" ? "bg-[#a9d47a]" : item.label === "Cash paid out" ? "bg-[#efb088]" : "bg-[#9bc9eb]"}`}
+                          style={{ width: `${item.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-5 flex items-center justify-between border-t border-[#edf0ec] pt-3">
+                  <span className="flex items-center gap-1.5 text-[9px] text-[#89948c]">
+                    <Activity size={12} />
+                    Net drawer change
                   </span>
-                  <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
-                    No transactions in this date range
-                  </p>
-                  <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
-                    Entries will appear here as you record them.
+                  <span className="number-font text-[11px] font-semibold">
+                    {systemClosing - openingBalance >= 0 ? "+" : "−"}
+                    {formatMMK(Math.abs(systemClosing - openingBalance))}{" "}
+                    <span className="text-[8px] font-normal text-[#9ba59d]">
+                      MMK
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === "reports" && (
+            <section id="reports" className="scroll-mt-24">
+              <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+                <div>
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Transaction register
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    Search the ledger by date and export a statement
                   </p>
                 </div>
-              )}
-            </div>
-          </section>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                    <span className="text-[9px] text-[#87928a]">From</span>
+                    <input
+                      aria-label="Start date"
+                      type="date"
+                      value={dateFrom}
+                      onChange={(event) => setDateFrom(event.target.value)}
+                      className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                    />
+                  </label>
+                  <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                    <span className="text-[9px] text-[#87928a]">To</span>
+                    <input
+                      aria-label="End date"
+                      type="date"
+                      value={dateTo}
+                      onChange={(event) => setDateTo(event.target.value)}
+                      className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] text-[#78847c]">
+                  <span className="flex items-center gap-1.5">
+                    <Search size={12} />
+                    {filteredTransactions.length} entries
+                  </span>
+                  <span>
+                    Inflow{" "}
+                    <b className="number-font text-[#4c7540]">
+                      {formatMMK(rangeInflow)} MMK
+                    </b>
+                  </span>
+                  <span>
+                    Outflow{" "}
+                    <b className="number-font text-[#ad6749]">
+                      {formatMMK(rangeOutflow)} MMK
+                    </b>
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={exportExcel}
+                    title="Export Excel"
+                    aria-label="Export Excel"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#568447] transition hover:bg-[#eef5e7]"
+                  >
+                    <FileSpreadsheet size={15} />
+                  </button>
+                  <button
+                    onClick={exportPdf}
+                    title="Export PDF summary"
+                    aria-label="Export PDF summary"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#62809a] transition hover:bg-[#edf4f8]"
+                  >
+                    <FileText size={15} />
+                  </button>
+                  <button
+                    onClick={printThermalSlip}
+                    title="Print 80 mm slip"
+                    aria-label="Print 80 mm slip"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] transition hover:bg-[#fbf0e7]"
+                  >
+                    <Printer size={15} />
+                  </button>
+                </div>
+              </div>
+              <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="border-b border-[#edf0ec] px-4 py-3">
+                  <h4 className="m-0 text-[11px] font-semibold">
+                    Daily session breakdown
+                  </h4>
+                  <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                    Active accounts and per-wallet reconciliation for each day
+                    in range
+                  </p>
+                </div>
+                <div className="table-scroll">
+                  <table className="w-full min-w-[900px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                        <th className="px-3 py-2.5">Date</th>
+                        <th className="px-3 py-2.5">Active wallet</th>
+                        <th className="px-3 py-2.5 text-right">Opening</th>
+                        <th className="px-3 py-2.5 text-right">Inflow</th>
+                        <th className="px-3 py-2.5 text-right">Outflow</th>
+                        <th className="px-3 py-2.5 text-right">
+                          System closing
+                        </th>
+                        <th className="px-3 py-2.5 text-right">
+                          Ground closing
+                        </th>
+                        <th className="px-3 py-2.5 text-right">Difference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportDailyRows.map((row) => (
+                        <tr
+                          key={`${row.date}-${row.accountId}`}
+                          className="border-b border-[#f0f2ef] last:border-0"
+                        >
+                          <td className="px-3 py-2.5 text-[9px] text-[#69766e]">
+                            {row.date}
+                          </td>
+                          <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                            <AccountBadge
+                              account={
+                                ledger.accounts.find(
+                                  (account) => account.id === row.accountId,
+                                ) ?? ledger.accounts[0]
+                              }
+                            />
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.opening)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                            {formatMMK(row.inflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#ad6749]">
+                            {formatMMK(row.outflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                            {formatMMK(row.systemClosing)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {row.groundClosing == null
+                              ? "—"
+                              : formatMMK(row.groundClosing)}
+                          </td>
+                          <td
+                            className={`number-font px-3 py-2.5 text-right text-[9px] font-semibold ${row.difference == null ? "text-[#9ba59d]" : row.difference === 0 ? "text-[#4f7937]" : "text-[#b05a3b]"}`}
+                          >
+                            {row.difference == null
+                              ? "—"
+                              : `${row.difference > 0 ? "+" : ""}${formatMMK(row.difference)}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {reportDailyRows.length === 0 && (
+                    <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                      No sessions in this date range.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="border-b border-[#edf0ec] px-4 py-3">
+                  <h4 className="m-0 text-[11px] font-semibold">
+                    Wallet-wise summary
+                  </h4>
+                  <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                    Net movement and earned commissions across the selected
+                    dates
+                  </p>
+                </div>
+                <div className="table-scroll">
+                  <table className="w-full min-w-[640px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                        <th className="px-3 py-2.5">Wallet</th>
+                        <th className="px-3 py-2.5 text-right">
+                          Opening total
+                        </th>
+                        <th className="px-3 py-2.5 text-right">Inflow</th>
+                        <th className="px-3 py-2.5 text-right">Outflow</th>
+                        <th className="px-3 py-2.5 text-right">Net volume</th>
+                        <th className="px-3 py-2.5 text-right">Commission</th>
+                        <th className="px-3 py-2.5 text-right">
+                          Latest system
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportWalletRows.map((row) => (
+                        <tr
+                          key={row.account.id}
+                          className="border-b border-[#f0f2ef] last:border-0"
+                        >
+                          <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                            <AccountBadge account={row.account} />
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.opening)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.inflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.outflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                            {formatMMK(row.net)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                            {formatMMK(row.commission)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.closing)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {reportWalletRows.length === 0 && (
+                    <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                      No wallet activity in this date range.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="table-scroll rounded-[10px] border border-[#e4e8e3] bg-white">
+                <table className="w-full min-w-[900px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[9px] font-semibold uppercase tracking-[1px] text-[#929d95]">
+                      <th className="px-4 py-3 font-semibold">Date</th>
+                      <th className="px-4 py-3 font-semibold">Time</th>
+                      <th className="px-4 py-3 font-semibold">Type</th>
+                      <th className="px-4 py-3 font-semibold">Customer</th>
+                      <th className="px-4 py-3 font-semibold">
+                        Account movement
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        Amount
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        Fee
+                      </th>
+                      <th className="w-10 px-3 py-3" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTransactions.map((transaction) => {
+                      const Icon = kindIcons[transaction.kind];
+                      return (
+                        <tr
+                          key={transaction.id}
+                          className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"
+                        >
+                          <td className="px-4 py-3 text-[9px] text-[#77837a]">
+                            {transaction.date}
+                          </td>
+                          <td className="px-4 py-3 text-[10px] text-[#77837a]">
+                            {transaction.time}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-1 text-[9px] font-medium ${kindColors[transaction.kind]}`}
+                            >
+                              <Icon size={11} />
+                              {kindLabel(transaction.kind)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="block max-w-[145px] truncate text-[10px] font-medium text-[#37463d]">
+                              {transaction.customer || "Walk-in customer"}
+                            </span>
+                            {transaction.phone && (
+                              <span className="mt-0.5 block text-[9px] text-[#9ba59d]">
+                                {transaction.phone}
+                              </span>
+                            )}
+                            {transaction.note && (
+                              <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">
+                                {transaction.note}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-[9px] text-[#768279]">
+                            <TransactionChannels
+                              accountList={ledger.accounts}
+                              transaction={transaction}
+                            />
+                          </td>
+                          <td className="number-font px-4 py-3 text-right text-[10px] font-semibold text-[#35443a]">
+                            {formatMMK(transaction.amount)}{" "}
+                            <span className="text-[8px] font-normal text-[#a0aaa3]">
+                              MMK
+                            </span>
+                          </td>
+                          <td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">
+                            {transaction.commission ? (
+                              <span className="inline-flex flex-col items-end gap-1">
+                                <span>{formatMMK(transaction.commission)}</span>
+                                <AccountBadge
+                                  account={
+                                    ledger.accounts.find(
+                                      (account) =>
+                                        account.id ===
+                                        commissionAccountId(transaction),
+                                    ) ?? ledger.accounts[0]
+                                  }
+                                  compact
+                                />
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            {transaction.date === activeDate && isOpen && (
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  onClick={() => editTransaction(transaction)}
+                                  aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
+                                  title="Edit transaction"
+                                  className="grid size-6 place-items-center rounded-[5px] text-[#73877a] hover:bg-[#edf4e8]"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    removeTransaction(transaction.id)
+                                  }
+                                  aria-label={`Remove ${kindLabel(transaction.kind)} transaction`}
+                                  title="Remove transaction"
+                                  className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {filteredTransactions.length === 0 && (
+                  <div className="flex min-h-[126px] flex-col items-center justify-center px-4 text-center">
+                    <span className="grid size-8 place-items-center rounded-[8px] bg-[#f1f4ef] text-[#8a998c]">
+                      <ReceiptText size={15} />
+                    </span>
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      No transactions in this date range
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      Entries will appear here as you record them.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
           <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-[#e3e8e2] pt-4 text-[9px] text-[#97a199] sm:flex-row">
             <span>Ledger · Daily cash operations</span>
             <span className="flex items-center gap-1.5">
@@ -2320,6 +2460,48 @@ export default function Home() {
           </footer>
         </div>
       </main>
+      <nav
+        className="app-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-[#e0e6df] bg-white/95 backdrop-blur"
+        aria-label="Primary navigation"
+      >
+        {(
+          [
+            { id: "overview", label: "Overview", icon: LayoutDashboard },
+            { id: "wallet", label: "Wallet", icon: WalletCards },
+            { id: "transactions", label: "Transactions", icon: ArrowLeftRight },
+            {
+              id: "reconciliation",
+              label: "Reconciliation",
+              icon: CircleCheck,
+            },
+            { id: "reports", label: "Reports", icon: FileText },
+          ] as { id: AppTab; label: string; icon: IconComponent }[]
+        ).map((tab) => {
+          const Icon = tab.icon;
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              aria-current={active ? "page" : undefined}
+              onClick={() => {
+                setActiveTab(tab.id);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              className={`flex h-full w-full min-w-0 flex-col items-center justify-center gap-0.5 border-l border-[#f0f2ef] px-0 pt-1.5 font-medium transition-colors first:border-l-0 ${active ? "text-[#315d3e]" : "text-[#87928a]"}`}
+            >
+              <span
+                className={`grid size-7 place-items-center rounded-[8px] ${active ? "bg-[#eaf4e0]" : ""}`}
+              >
+                <Icon size={18} strokeWidth={active ? 2.4 : 1.8} />
+              </span>
+              <span className="nav-label w-full max-w-full whitespace-nowrap text-center">
+                {tab.label}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
 
       {modal === "admin" && (
         <div
