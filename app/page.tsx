@@ -1157,7 +1157,7 @@ export default function Home() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5 md:gap-4">
-            <div className="flex shrink-0 items-center gap-1 rounded-[7px] border border-[#e1e6e0] bg-white px-1.5 py-1.5 text-[10px] text-[#526158] sm:gap-2 sm:px-2.5">
+            <div className="flex shrink-0 items-center gap-1 rounded-[7px] border border-[#e1e6e0] bg-white px-2 py-1 text-[10px] text-[#526158] sm:gap-1.5 sm:text-xs">
               <CalendarDays
                 size={14}
                 className="hidden shrink-0 text-[#6e8b58] min-[390px]:block"
@@ -1169,7 +1169,7 @@ export default function Home() {
                 value={activeDate}
                 max={today}
                 onChange={(event) => selectSessionDate(event.target.value)}
-                className="w-[92px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[112px]"
+                className="w-[88px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[104px] sm:text-xs"
               />
             </div>
             {isOpen ? (
@@ -1440,24 +1440,27 @@ export default function Home() {
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {(todaySession ? todayActiveAccounts : accounts)
-                    .slice(0, 4)
-                    .map((account) => (
-                      <div
-                        key={account.id}
-                        className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-3"
-                      >
-                        <AccountBadge account={account} compact />
-                        <p className="number-font mb-0 mt-2.5 truncate text-[14px] font-semibold text-[#213128]">
-                          {todaySession
-                            ? formatMMK(balances[account.id] ?? 0)
-                            : "0"}
-                          <span className="ml-1 text-[8px] font-normal text-[#98a199]">
-                            MMK
-                          </span>
-                        </p>
-                      </div>
-                    ))}
+                  {(todaySession
+                    ? todayActiveAccounts.filter(
+                        (account) => !account.deletedAt,
+                      )
+                    : accounts
+                  ).map((account) => (
+                    <div
+                      key={account.id}
+                      className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-3"
+                    >
+                      <AccountBadge account={account} compact />
+                      <p className="number-font mb-0 mt-2.5 truncate text-[14px] font-semibold text-[#213128]">
+                        {todaySession
+                          ? formatMMK(balances[account.id] ?? 0)
+                          : "0"}
+                        <span className="ml-1 text-[8px] font-normal text-[#98a199]">
+                          MMK
+                        </span>
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </section>
             </>
