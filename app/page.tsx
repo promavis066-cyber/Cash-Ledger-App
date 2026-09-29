@@ -29,7 +29,7 @@ import {
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   accountClosingBalances,
   accountDifference,
@@ -48,11 +48,7 @@ import {
 
 type ModalKind = "open" | "close" | "accounts" | "admin" | null;
 type AppTab =
-  | "overview"
-  | "wallet"
-  | "transactions"
-  | "reconciliation"
-  | "reports";
+  "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
 
@@ -183,6 +179,37 @@ function escapeHtml(value: string) {
   });
 }
 
+async function persistLedgerRecord(payload: string) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, payload);
+  } catch {
+    // localStorage can fail on restricted browsers or quota issues.
+  }
+
+  if (!("indexedDB" in window)) return;
+
+  const request = window.indexedDB.open("cash-ledger-db", 1);
+
+  request.onupgradeneeded = () => {
+    const db = request.result;
+    if (!db.objectStoreNames.contains("ledger")) {
+      db.createObjectStore("ledger");
+    }
+  };
+
+  await new Promise<void>((resolve) => {
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("ledger", "readwrite");
+      const store = transaction.objectStore("ledger");
+      store.put(payload, STORAGE_KEY);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => resolve();
+    };
+    request.onerror = () => resolve();
+  });
+}
+
 function formatDate(
   dateKey: string,
   options: Intl.DateTimeFormatOptions = {
@@ -273,6 +300,31 @@ export default function Home() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator === "undefined" ? true : navigator.onLine,
+  );
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleStatusChange = () => setIsOnline(window.navigator.onLine);
+    handleStatusChange();
+    window.addEventListener("online", handleStatusChange);
+    window.addEventListener("offline", handleStatusChange);
+    return () => {
+      window.removeEventListener("online", handleStatusChange);
+      window.removeEventListener("offline", handleStatusChange);
+    };
+  }, []);
+
+  const persistLedger = useCallback((nextLedger: LedgerData) => {
+    const payload = JSON.stringify(nextLedger);
+    void persistLedgerRecord(payload);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -291,9 +343,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (hydrated)
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
-  }, [hydrated, ledger]);
+    if (!hydrated) return;
+    persistLedger(ledger);
+  }, [hydrated, ledger, persistLedger]);
 
   const todaySession =
     ledger.sessions.find((session) => session.date === activeDate) ?? null;
@@ -322,6 +374,13 @@ export default function Home() {
           transaction.date >= dateFrom && transaction.date <= dateTo,
       ),
     [dateFrom, dateTo, ledger.transactions],
+  );
+  const reportSessions = useMemo(
+    () =>
+      ledger.sessions
+        .filter((session) => session.date >= dateFrom && session.date <= dateTo)
+        .sort((left, right) => left.date.localeCompare(right.date)),
+    [dateFrom, dateTo, ledger.sessions],
   );
   const openingBalances = todaySession?.accountBalances.opening ?? {};
   const accountBalances = accountClosingBalances(
@@ -362,64 +421,72 @@ export default function Home() {
     todaySession?.closingBalance == null
       ? null
       : todaySession.closingBalance - systemClosing;
-  const reportSessions = ledger.sessions
-    .filter((session) => session.date >= dateFrom && session.date <= dateTo)
-    .sort((left, right) => left.date.localeCompare(right.date));
-  const reportDailyRows = reportSessions.flatMap((session) => {
-    const dayTransactions = filteredTransactions.filter(
-      (transaction) => transaction.date === session.date,
-    );
-    const closing = accountClosingBalances(
-      ledger.accounts,
-      session.accountBalances.opening,
-      dayTransactions,
-      session.activeAccountIds,
-    );
-    return session.activeAccountIds.map((id) => {
-      const incoming = dayTransactions
-        .filter((transaction) => transaction.toAccountId === id)
-        .reduce((sum, transaction) => sum + transaction.amount, 0);
-      const outgoing = dayTransactions
-        .filter((transaction) => transaction.fromAccountId === id)
-        .reduce((sum, transaction) => sum + transaction.amount, 0);
-      const commission = dayTransactions
-        .filter((transaction) => commissionAccountId(transaction) === id)
-        .reduce((sum, transaction) => sum + transaction.commission, 0);
-      const commissionCredit = dayTransactions
-        .filter((transaction) => commissionAccountId(transaction) === id)
-        .reduce((sum, transaction) => sum + transaction.commission, 0);
-      const system = closing[id] ?? 0;
-      const ground = session.accountBalances.groundClosing[id] ?? null;
-      return {
-        date: session.date,
-        accountId: id,
-        opening: session.accountBalances.opening[id] ?? 0,
-        inflow: incoming + commissionCredit,
-        outflow: outgoing,
-        commission,
-        systemClosing: system,
-        groundClosing: ground,
-        difference: accountDifference(system, ground),
-      };
-    });
-  });
-  const reportAccountIds = new Set(reportDailyRows.map((row) => row.accountId));
-  const reportWalletRows = ledger.accounts
-    .filter((account) => reportAccountIds.has(account.id))
-    .map((account) => {
-      const rows = reportDailyRows.filter(
-        (row) => row.accountId === account.id,
-      );
-      return {
-        account,
-        opening: rows.reduce((sum, row) => sum + row.opening, 0),
-        inflow: rows.reduce((sum, row) => sum + row.inflow, 0),
-        outflow: rows.reduce((sum, row) => sum + row.outflow, 0),
-        commission: rows.reduce((sum, row) => sum + row.commission, 0),
-        net: rows.reduce((sum, row) => sum + row.inflow - row.outflow, 0),
-        closing: rows.at(-1)?.systemClosing ?? 0,
-      };
-    });
+  const reportDailyRows = useMemo(
+    () =>
+      reportSessions.flatMap((session) => {
+        const dayTransactions = filteredTransactions.filter(
+          (transaction) => transaction.date === session.date,
+        );
+        const closing = accountClosingBalances(
+          ledger.accounts,
+          session.accountBalances.opening,
+          dayTransactions,
+          session.activeAccountIds,
+        );
+        return session.activeAccountIds.map((id) => {
+          const incoming = dayTransactions
+            .filter((transaction) => transaction.toAccountId === id)
+            .reduce((sum, transaction) => sum + transaction.amount, 0);
+          const outgoing = dayTransactions
+            .filter((transaction) => transaction.fromAccountId === id)
+            .reduce((sum, transaction) => sum + transaction.amount, 0);
+          const commission = dayTransactions
+            .filter((transaction) => commissionAccountId(transaction) === id)
+            .reduce((sum, transaction) => sum + transaction.commission, 0);
+          const commissionCredit = dayTransactions
+            .filter((transaction) => commissionAccountId(transaction) === id)
+            .reduce((sum, transaction) => sum + transaction.commission, 0);
+          const system = closing[id] ?? 0;
+          const ground = session.accountBalances.groundClosing[id] ?? null;
+          return {
+            date: session.date,
+            accountId: id,
+            opening: session.accountBalances.opening[id] ?? 0,
+            inflow: incoming + commissionCredit,
+            outflow: outgoing,
+            commission,
+            systemClosing: system,
+            groundClosing: ground,
+            difference: accountDifference(system, ground),
+          };
+        });
+      }),
+    [filteredTransactions, ledger.accounts, reportSessions],
+  );
+  const reportAccountIds = useMemo(
+    () => new Set(reportDailyRows.map((row) => row.accountId)),
+    [reportDailyRows],
+  );
+  const reportWalletRows = useMemo(
+    () =>
+      ledger.accounts
+        .filter((account) => reportAccountIds.has(account.id))
+        .map((account) => {
+          const rows = reportDailyRows.filter(
+            (row) => row.accountId === account.id,
+          );
+          return {
+            account,
+            opening: rows.reduce((sum, row) => sum + row.opening, 0),
+            inflow: rows.reduce((sum, row) => sum + row.inflow, 0),
+            outflow: rows.reduce((sum, row) => sum + row.outflow, 0),
+            commission: rows.reduce((sum, row) => sum + row.commission, 0),
+            net: rows.reduce((sum, row) => sum + row.inflow - row.outflow, 0),
+            closing: rows.at(-1)?.systemClosing ?? 0,
+          };
+        }),
+    [ledger.accounts, reportAccountIds, reportDailyRows],
+  );
   const reportOpeningBalance = reportDailyRows
     .filter((row) => row.date === dateFrom)
     .reduce((total, row) => total + row.opening, 0);
@@ -1057,65 +1124,166 @@ export default function Home() {
 
   return (
     <div className="dashboard-shell flex min-h-screen">
-      <main className="min-w-0 flex-1 pb-24">
-        <header className="topbar-actions sticky top-0 z-20 flex min-h-[64px] items-center justify-between border-b border-[#e5e9e4] bg-[#f3f5f2]/95 px-4 backdrop-blur md:px-8">
+      <aside className="hidden">
+        <a
+          href="#overview"
+          className="mb-11 flex items-center gap-3 px-2 no-underline"
+        >
+          <span className="grid size-10 place-items-center rounded-[12px] bg-[#c6f36b] text-[#173c31]">
+            <Activity size={21} strokeWidth={2.5} />
+          </span>
+          <span>
+            <span className="block text-[19px] font-semibold tracking-[-0.5px]">
+              ledger<span className="text-[#c6f36b]">.</span>
+            </span>
+            <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-[1.7px] text-white/45">
+              Cash operations
+            </span>
+          </span>
+        </a>
+        <p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">
+          Workspace
+        </p>
+        <nav className="flex flex-col gap-1" aria-label="Main navigation">
+          <a
+            href="#overview"
+            className="flex h-10 items-center gap-3 rounded-[8px] bg-white/10 px-3 text-[12px] font-medium text-white no-underline"
+          >
+            <LayoutDashboard size={16} />
+            Overview
+            <span className="ml-auto size-1.5 rounded-full bg-[#c6f36b]" />
+          </a>
+          <a
+            href="#transactions"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <ArrowLeftRight size={16} />
+            Transactions
+          </a>
+          <a
+            href="#reconciliation"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <CircleCheck size={16} />
+            Reconciliation
+          </a>
+          <a
+            href="#reports"
+            className="flex h-10 items-center gap-3 rounded-[8px] px-3 text-[12px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+          >
+            <FileText size={16} />
+            Reports
+          </a>
+        </nav>
+        <div className="mt-9">
+          <p className="mb-3 px-3 text-[9px] font-semibold uppercase tracking-[1.8px] text-white/40">
+            Accounts
+          </p>
+          <nav className="flex flex-col gap-1" aria-label="Payment accounts">
+            {accounts.map((account) => (
+              <a
+                key={account.id}
+                href="#accounts"
+                className="flex h-9 items-center gap-3 rounded-[8px] px-3 text-[11px] text-white/65 transition hover:bg-white/7 hover:text-white no-underline"
+              >
+                <span
+                  className={`grid size-5 place-items-center rounded-[6px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
+                >
+                  {account.mark}
+                </span>
+                {account.shortName}
+              </a>
+            ))}
+          </nav>
+        </div>
+        <div className="mt-auto rounded-[10px] border border-white/10 bg-white/5 p-3.5">
+          <div className="flex items-center gap-2 text-[10px] font-medium text-white/80">
+            <span
+              className={`size-1.5 rounded-full ${isOpen ? "animate-pulse bg-[#c6f36b]" : "bg-white/35"}`}
+            />
+            {isOpen
+              ? "Session in progress"
+              : isClosed
+                ? "Day completed"
+                : "No session started"}
+          </div>
+          <p className="mb-0 mt-2 text-[10px] leading-4 text-white/45">
+            {isOpen
+              ? `Opened ${todaySession?.openedAt ? new Date(todaySession.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "today"}`
+              : "Your records are saved on this device."}
+          </p>
+        </div>
+      </aside>
+
+      <main className="min-w-0 flex-1">
+        <header className="topbar-actions sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-[#e5e9e4] bg-[#f3f5f2]/95 px-4 backdrop-blur md:px-8">
           <div className="flex items-center gap-3">
             <div>
-              <p className="m-0 text-[9px] font-medium uppercase tracking-[1.5px] text-[#87928b]">
+              <p className="m-0 text-[10px] font-medium uppercase tracking-[1.5px] text-[#87928b]">
                 Daily operations
               </p>
-              <h1 className="m-0 mt-0.5 text-[14px] font-semibold tracking-[-0.25px] text-[#17251f]">
+              <h1 className="m-0 mt-0.5 text-[15px] font-semibold tracking-[-0.25px] text-[#17251f]">
                 Cash ledger
               </h1>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
-            <div className="flex shrink-0 items-center gap-1 rounded-[7px] border border-[#e1e6e0] bg-white px-2 py-1 text-[10px] text-[#526158]">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5 md:gap-4">
+            <div className="flex shrink-0 items-center gap-1 rounded-[7px] border border-[#e1e6e0] bg-white px-2 py-1 text-[10px] text-[#526158] sm:gap-1.5 sm:text-xs">
               <CalendarDays
-                size={13}
-                className="hidden shrink-0 text-[#6e8b58] min-[380px]:block"
+                size={14}
+                className="hidden shrink-0 text-[#6e8b58] min-[390px]:block"
               />
+              <span className="hidden font-medium sm:inline">Session date</span>
               <input
                 aria-label="Active session date"
                 type="date"
                 value={activeDate}
                 max={today}
                 onChange={(event) => selectSessionDate(event.target.value)}
-                className="w-[84px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[96px]"
+                className="w-[88px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[104px] sm:text-xs"
               />
+            </div>
+            <div
+              className={`hidden items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[9px] font-medium sm:inline-flex ${isOnline ? "border-[#dfeede] bg-[#edf9ee] text-[#346b47]" : "border-[#f3dfcb] bg-[#fff8f2] text-[#a95e35]"}`}
+            >
+              <span
+                className={`size-1.5 rounded-full ${isOnline ? "bg-[#53a766]" : "bg-[#d28a4d]"}`}
+              />
+              {isOnline ? "Back Online" : "Offline Mode - Saved Locally"}
             </div>
             {isOpen ? (
               <button
                 aria-label="Close session"
                 onClick={startClosingFlow}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
                 <span className="size-1.5 rounded-full bg-[#c6f36b]" />
-                <span>Close session</span>
+                <span className="hidden min-[390px]:inline">Close session</span>
               </button>
             ) : isClosed ? (
               <button
                 aria-label="Reopen or edit session"
                 onClick={() => requestAdminUnlock("reopen")}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] border border-[#dce4da] bg-white px-2.5 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-2 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3] sm:px-3"
               >
-                <Pencil size={12} />
-                <span>Reopen</span>
+                <Pencil size={13} />
+                <span className="hidden min-[420px]:inline">
+                  Reopen / Edit Session
+                </span>
               </button>
             ) : (
               <button
                 aria-label="Open session"
                 onClick={startOpeningFlow}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745]"
+                className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
-                <Plus size={14} />
-                <span>Open session</span>
+                <Plus size={15} />
+                <span className="hidden min-[390px]:inline">Open session</span>
               </button>
             )}
           </div>
         </header>
-
-        <div className="app-content mx-auto max-w-[1440px] px-4 pt-4 md:px-8 md:pt-6">
+        <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
           {message && (
             <div
               role="status"
@@ -1125,22 +1293,46 @@ export default function Home() {
               {message}
             </div>
           )}
-
           {activeTab === "overview" && (
             <>
+              <section className="fade-up mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+                <div>
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-[#8b968e]">
+                    {formatDate(activeDate)}
+                  </p>
+                  <h2 className="m-0 text-[24px] font-semibold leading-tight tracking-[-0.9px] text-[#17251f] md:text-[29px]">
+                    Good day, operator<span className="text-[#87a953]">.</span>
+                  </h2>
+                  <p className="mb-0 mt-2 text-[12px] text-[#7b8780]">
+                    Your counter at a glance. Every kyat accounted for.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 self-start rounded-[7px] border border-[#e1e6e0] bg-white px-3 py-2 text-[10px] text-[#657269] sm:self-auto">
+                  <span
+                    className={`size-1.5 rounded-full ${isOpen ? "bg-[#76aa42]" : isClosed ? "bg-[#87928b]" : "bg-[#efa265]"}`}
+                  />
+                  {isOpen
+                    ? "Day is open"
+                    : isClosed
+                      ? "Day is closed"
+                      : "Awaiting opening balance"}
+                </div>
+              </section>
+
               <section className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
-                <div className="relative min-h-[190px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white">
+                <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
                   <div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" />
-                  <div className="relative flex h-full flex-col justify-between gap-6">
+                  <div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" />
+                  <div className="relative flex h-full flex-col justify-between gap-8">
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="mb-1 text-[9px] font-medium uppercase tracking-[1.7px] text-white/55">
+                        <p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">
                           Cash position · MMK
                         </p>
-                        <p className="number-font m-0 text-[28px] font-semibold tracking-[-1px] md:text-[34px]">
+                        <p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">
                           {formatMMK(balances["cash-drawer"])}
                         </p>
-                        <p className="mb-0 mt-1 text-[10px] text-white/55">
+                        <p className="mb-0 mt-2 text-[10px] text-white/55">
                           {isOpen
                             ? "Live drawer balance"
                             : isClosed
@@ -1148,28 +1340,32 @@ export default function Home() {
                               : "Opening balance not set"}
                         </p>
                       </div>
-                      <span className="grid size-9 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
-                        <WalletCards size={18} />
+                      <span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
+                        <WalletCards size={19} />
                       </span>
                     </div>
-                    <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3">
+                    <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5">
                       <div className="flex gap-6">
                         <div>
                           <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
                             Opening
                           </p>
-                          <p className="number-font mb-0 mt-0.5 text-[11px] font-medium">
+                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
                             {formatMMK(openingBalance)}{" "}
-                            <span className="text-[8px] text-white/45">MMK</span>
+                            <span className="text-[9px] text-white/45">
+                              MMK
+                            </span>
                           </p>
                         </div>
                         <div>
                           <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
                             System close
                           </p>
-                          <p className="number-font mb-0 mt-0.5 text-[11px] font-medium">
+                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
                             {formatMMK(systemClosing)}{" "}
-                            <span className="text-[8px] text-white/45">MMK</span>
+                            <span className="text-[9px] text-white/45">
+                              MMK
+                            </span>
                           </p>
                         </div>
                       </div>
@@ -1179,75 +1375,82 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
-
-                <div className="flex min-h-[190px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5">
-                  <div>
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="mb-1 text-[9px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">
-                          Session control
-                        </p>
-                        <h3 className="m-0 text-[15px] font-semibold tracking-[-0.3px]">
-                          {isOpen
-                            ? "Morning session"
-                            : isClosed
-                              ? "Session complete"
-                              : "Start the day"}
-                        </h3>
-                      </div>
-                      <span
-                        className={`grid size-8 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}
-                      >
-                        {isOpen ? <Clock3 size={16} /> : <Check size={16} />}
-                      </span>
+                <div className="flex min-h-[212px] flex-col justify-between rounded-[11px] border border-[#e4e8e3] bg-white p-5 md:p-6">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[1.5px] text-[#8a958d]">
+                        Session control
+                      </p>
+                      <h3 className="m-0 text-[16px] font-semibold tracking-[-0.3px]">
+                        {isOpen
+                          ? "Morning session"
+                          : isClosed
+                            ? "Session complete"
+                            : "Start the day"}
+                      </h3>
                     </div>
-                    <p className="mb-0 mt-2 text-[11px] leading-5 text-[#849087]">
-                      {isOpen
-                        ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.`
-                        : isClosed
-                          ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}.`
-                          : "Enter opening balances before recording today’s transactions."}
-                    </p>
+                    <span
+                      className={`grid size-9 place-items-center rounded-[8px] ${isOpen ? "bg-[#eff7e6] text-[#6b963d]" : "bg-[#f3f5f2] text-[#768279]"}`}
+                    >
+                      {isOpen ? (
+                        <Clock3 size={17} />
+                      ) : isClosed ? (
+                        <Check size={17} />
+                      ) : (
+                        <Activity size={17} />
+                      )}
+                    </span>
                   </div>
-
-                  <div className="mt-4 border-t border-[#edf0ec] pt-3">
-                    <p className="mb-2 text-[10px] text-[#87928a]">
+                  <p className="mb-4 mt-2 max-w-[320px] text-[11px] leading-5 text-[#849087]">
+                    {isOpen
+                      ? `Opened at ${new Date(todaySession!.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Record activity as it happens.`
+                      : isClosed
+                        ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.`
+                        : "Enter the physical opening cash before you start recording today’s transactions."}
+                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-[#edf0ec] pt-3.5">
+                    <span className="text-[10px] text-[#87928a]">
                       {todayTransactions.length} transaction
                       {todayTransactions.length === 1 ? "" : "s"} today
-                    </p>
-
-                    {(isOpen || (isUnlocked && todaySession)) ? (
-                      <div className="grid w-full grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={startOpeningFlow}
-                          className="flex h-10 w-full items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-2 text-xs font-medium text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
-                        >
-                          Edit Opening Bal
-                        </button>
-                        <button
-                          type="button"
-                          onClick={startClosingFlow}
-                          className="flex h-10 w-full items-center justify-center rounded-[8px] bg-[#173c31] px-2 text-xs font-medium text-white shadow-sm transition hover:bg-[#245745] active:translate-y-px"
-                        >
-                          Edit Closing Bal
-                        </button>
-                      </div>
-                    ) : !todaySession ? (
+                    </span>
+                    {!todaySession && (
                       <button
-                        type="button"
                         onClick={startOpeningFlow}
-                        className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[8px] bg-[#c6f36b] px-3 text-xs font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
+                        className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
                       >
                         Set opening balance
                         <ArrowRight size={13} />
                       </button>
-                    ) : null}
+                    )}
                   </div>
+                  {(isOpen || (isUnlocked && todaySession)) && (
+                    <div className="mt-4 grid w-full grid-cols-2 gap-2">
+                      {isUnlocked && todaySession ? (
+                        <button
+                          onClick={startOpeningFlow}
+                          className="flex min-h-11 w-full items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-2 text-xs font-medium text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
+                        >
+                          Edit Opening Bal
+                        </button>
+                      ) : (
+                        <span aria-hidden="true" />
+                      )}
+                      {isOpen ? (
+                        <button
+                          onClick={startClosingFlow}
+                          className="flex min-h-11 w-full items-center justify-center rounded-[8px] bg-[#173c31] px-2 text-xs font-medium text-white shadow-sm transition hover:bg-[#245745] active:translate-y-px"
+                        >
+                          Edit Closing Bal
+                        </button>
+                      ) : (
+                        <span aria-hidden="true" />
+                      )}
+                    </div>
+                  )}
                 </div>
               </section>
 
-              <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {[
                   {
                     label: "Cash-in volume",
@@ -1280,38 +1483,37 @@ export default function Home() {
                 ].map((metric) => (
                   <div
                     key={metric.label}
-                    className="rounded-[10px] border border-[#e5e9e4] bg-white p-3.5"
+                    className="rounded-[10px] border border-[#e5e9e4] bg-white p-4 md:p-5"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] font-medium text-[#758178]">
                         {metric.label}
                       </span>
                       <span
-                        className={`grid size-6 place-items-center rounded-[6px] ${metric.tone}`}
+                        className={`grid size-7 place-items-center rounded-[7px] ${metric.tone}`}
                       >
-                        <metric.icon size={13} />
+                        <metric.icon size={14} />
                       </span>
                     </div>
-                    <p className="number-font mb-0 mt-2 text-[17px] font-semibold tracking-[-0.5px] text-[#1c2b23]">
+                    <p className="number-font mb-0 mt-3 text-[19px] font-semibold tracking-[-0.6px] text-[#1c2b23] md:text-[22px]">
                       {formatMMK(metric.amount)}{" "}
-                      <span className="text-[9px] font-medium text-[#98a199]">
+                      <span className="text-[9px] font-medium tracking-normal text-[#98a199]">
                         MMK
                       </span>
                     </p>
-                    <p className="mb-0 mt-0.5 text-[8.5px] text-[#98a199]">
+                    <p className="mb-0 mt-1 text-[9px] text-[#98a199]">
                       {metric.hint}
                     </p>
                   </div>
                 ))}
               </section>
-
-              <section className="mb-6">
-                <div className="mb-2.5 flex items-end justify-between">
+              <section className="mb-7">
+                <div className="mb-3 flex items-end justify-between">
                   <div>
                     <h3 className="m-0 text-[13px] font-semibold">
                       Quick balances
                     </h3>
-                    <p className="mb-0 mt-0.5 text-[10px] text-[#8b968d]">
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
                       {todaySession
                         ? "Active accounts for this session"
                         : "Session balances start at zero"}
@@ -1333,10 +1535,10 @@ export default function Home() {
                   ).map((account) => (
                     <div
                       key={account.id}
-                      className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-2.5"
+                      className="min-w-0 rounded-[9px] border border-[#e5e9e4] bg-white px-3 py-3"
                     >
                       <AccountBadge account={account} compact />
-                      <p className="number-font mb-0 mt-2 truncate text-[13px] font-semibold text-[#213128]">
+                      <p className="number-font mb-0 mt-2.5 truncate text-[14px] font-semibold text-[#213128]">
                         {todaySession
                           ? formatMMK(balances[account.id] ?? 0)
                           : "0"}
@@ -1350,7 +1552,6 @@ export default function Home() {
               </section>
             </>
           )}
-
           {activeTab === "wallet" && (
             <section id="accounts" className="mb-7 scroll-mt-24">
               <div className="mb-3 flex items-end justify-between">
@@ -1358,15 +1559,15 @@ export default function Home() {
                   <h3 className="m-0 text-[13px] font-semibold">
                     Account balances
                   </h3>
-                  <p className="mb-0 mt-0.5 text-[10px] text-[#8b968d]">
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
                     {todaySession
                       ? `${todayActiveAccounts.length} active in today’s session`
-                      : "Manage wallets and configure balances"}
+                      : "Every new session starts from manually entered balances"}
                   </p>
                 </div>
                 <button
                   onClick={() => setModal("accounts")}
-                  className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-3 text-[10px] font-semibold text-white transition hover:bg-[#245745]"
+                  className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-3 text-[10px] font-semibold text-white transition hover:bg-[#245745]"
                 >
                   <Plus size={13} />
                   Manage Acc
@@ -1376,11 +1577,11 @@ export default function Home() {
                 {accounts.map((account) => (
                   <div
                     key={account.id}
-                    className={`min-w-0 rounded-[9px] border bg-white px-3 py-2.5 ${todaySession && !todaySession.activeAccountIds.includes(account.id) ? "border-dashed border-[#e5e9e4] opacity-55" : "border-[#e5e9e4]"}`}
+                    className={`min-w-0 rounded-[9px] border bg-white px-3 py-3 ${todaySession && !todaySession.activeAccountIds.includes(account.id) ? "border-dashed border-[#e5e9e4] opacity-55" : "border-[#e5e9e4]"}`}
                   >
-                    <div className="mb-2 flex items-center gap-1.5">
+                    <div className="mb-3 flex items-center gap-2">
                       <span
-                        className={`grid size-5 shrink-0 place-items-center rounded-[6px] text-[8.5px] font-bold ${accountColorBadge(account.color)}`}
+                        className={`grid size-6 shrink-0 place-items-center rounded-[7px] text-[9px] font-bold ${accountColorBadge(account.color)}`}
                       >
                         {account.mark}
                       </span>
@@ -1388,13 +1589,16 @@ export default function Home() {
                         {account.shortName}
                       </span>
                     </div>
-                    <p className="number-font m-0 truncate text-[12px] font-semibold tracking-[-0.3px] text-[#213128]">
+                    <p className="number-font m-0 truncate text-[13px] font-semibold tracking-[-0.3px] text-[#213128]">
                       {todaySession?.activeAccountIds.includes(account.id)
                         ? formatMMK(balances[account.id] ?? 0)
                         : "—"}
                     </p>
                     <p className="mb-0 mt-0.5 text-[8px] text-[#a0aaa2]">
-                      {account.accountNumber || account.kind.toUpperCase()}
+                      {account.accountNumber || account.kind.toUpperCase()} ·{" "}
+                      {todaySession?.activeAccountIds.includes(account.id)
+                        ? "Active today"
+                        : "Inactive today"}
                     </p>
                   </div>
                 ))}
@@ -1404,31 +1608,31 @@ export default function Home() {
 
           {activeTab === "transactions" && (
             <section id="transactions" className="mb-7 scroll-mt-24">
-              <div className="mb-3 flex flex-col justify-between gap-1 sm:flex-row sm:items-end">
+              <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
                 <div>
                   <h3 className="m-0 text-[13px] font-semibold">
                     Quick transaction
                   </h3>
-                  <p className="mb-0 mt-0.5 text-[10px] text-[#8b968d]">
-                    Capture counter transaction
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    Capture a counter movement in a few seconds
                   </p>
                 </div>
                 {!isOpen && (
-                  <span className="flex items-center gap-1 text-[10px] text-[#ac7954]">
-                    <CircleAlert size={12} />
-                    Open session to enter transactions
+                  <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]">
+                    <CircleAlert size={13} />
+                    Open a session to enter transactions
                   </span>
                 )}
               </div>
-
               <form
                 id="transaction-entry"
                 onSubmit={addTransaction}
-                className="rounded-[10px] border border-[#e4e8e3] bg-white p-4"
+                className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
               >
                 <div
-                  className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-2.5 scrollbar-hidden"
+                  className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden"
                   role="tablist"
+                  aria-label="Transaction type"
                 >
                   {(
                     [
@@ -1442,23 +1646,36 @@ export default function Home() {
                     return (
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={transactionKind === kind}
                         key={kind}
                         onClick={() => setTransactionKind(kind)}
                         className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
                       >
-                        <Icon size={12} />
+                        <Icon size={13} />
                         {kindLabel(kind)}
                       </button>
                     );
                   })}
                 </div>
-
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {(transactionKind === "CASH_IN" ||
                     transactionKind === "CASH_OUT") && (
                     <label className="field-label">
-                      {transactionKind === "CASH_IN" ? "Received via" : "Paid to"}
-                      <span className="select-wrap mt-1">
+                      {transactionKind === "CASH_IN"
+                        ? "Received via"
+                        : "Paid to"}
+                      <AccountBadge
+                        account={
+                          transactionAccounts.find(
+                            (account) => account.id === serviceAccountId,
+                          ) ??
+                          transactionAccounts[0] ??
+                          ledger.accounts[0]
+                        }
+                        compact
+                      />
+                      <span className="select-wrap">
                         <select
                           value={serviceAccountId}
                           onChange={(event) =>
@@ -1477,12 +1694,21 @@ export default function Home() {
                       </span>
                     </label>
                   )}
-
                   {transactionKind === "TRANSFER" && (
                     <>
                       <label className="field-label">
                         From account
-                        <span className="select-wrap mt-1">
+                        <AccountBadge
+                          account={
+                            transactionAccounts.find(
+                              (account) => account.id === fromAccountId,
+                            ) ??
+                            transactionAccounts[0] ??
+                            ledger.accounts[0]
+                          }
+                          compact
+                        />
+                        <span className="select-wrap">
                           <select
                             value={fromAccountId}
                             onChange={(event) =>
@@ -1500,7 +1726,17 @@ export default function Home() {
                       </label>
                       <label className="field-label">
                         To account
-                        <span className="select-wrap mt-1">
+                        <AccountBadge
+                          account={
+                            transactionAccounts.find(
+                              (account) => account.id === toAccountId,
+                            ) ??
+                            transactionAccounts[0] ??
+                            ledger.accounts[0]
+                          }
+                          compact
+                        />
+                        <span className="select-wrap">
                           <select
                             value={toAccountId}
                             onChange={(event) =>
@@ -1518,19 +1754,17 @@ export default function Home() {
                       </label>
                     </>
                   )}
-
                   {transactionKind === "EXPENSE" && (
                     <label className="field-label">
                       Paid from
-                      <span className="mt-1 flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
+                      <span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
                         Cash in drawer
                       </span>
                     </label>
                   )}
-
                   <label className="field-label">
                     Amount · MMK
-                    <span className="input-wrap mt-1">
+                    <span className="input-wrap">
                       <input
                         required
                         min="1"
@@ -1543,10 +1777,9 @@ export default function Home() {
                       />
                     </span>
                   </label>
-
                   <label className="field-label">
                     Commission · MMK
-                    <span className="input-wrap mt-1">
+                    <span className="input-wrap">
                       <input
                         min="0"
                         step="1"
@@ -1560,11 +1793,10 @@ export default function Home() {
                       />
                     </span>
                   </label>
-
                   {Number(commissionInput) > 0 && (
                     <label className="field-label">
                       Commission Received In
-                      <span className="select-wrap mt-1">
+                      <span className="select-wrap">
                         <select
                           value={commissionDestinationId}
                           onChange={(event) =>
@@ -1583,12 +1815,13 @@ export default function Home() {
                       </span>
                     </label>
                   )}
-
                   <label className="field-label">
-                    Customer name
-                    <span className="input-wrap mt-1">
+                    Customer name{" "}
+                    <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
                       <input
-                        placeholder="Optional"
+                        autoComplete="name"
+                        placeholder="Name at counter"
                         value={customerInput}
                         onChange={(event) =>
                           setCustomerInput(event.target.value)
@@ -1596,32 +1829,46 @@ export default function Home() {
                       />
                     </span>
                   </label>
-
                   <label className="field-label">
-                    Phone number
-                    <span className="input-wrap mt-1">
+                    Phone number{" "}
+                    <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
                       <input
+                        autoComplete="tel"
                         inputMode="tel"
-                        placeholder="Optional"
+                        placeholder="09 xxx xxx xxx"
                         value={phoneInput}
                         onChange={(event) => setPhoneInput(event.target.value)}
                       />
                     </span>
                   </label>
-
                   <label className="field-label sm:col-span-2">
-                    Note
-                    <span className="input-wrap mt-1">
+                    Note <span className="optional-label">Optional</span>
+                    <span className="input-wrap">
                       <input
-                        placeholder="Optional note"
+                        placeholder="Reference or short note"
                         value={noteInput}
                         onChange={(event) => setNoteInput(event.target.value)}
                       />
                     </span>
                   </label>
                 </div>
-
-                <div className="mt-4 flex justify-end gap-2 border-t border-[#edf0ec] pt-3">
+                <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
+                  <span className="text-[9px] text-[#99a39b]">
+                    Transactions are saved in this browser on this device.
+                  </span>
+                  <button
+                    disabled={!isOpen}
+                    type="submit"
+                    className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {editingTransactionId ? (
+                      <Check size={14} />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                    {editingTransactionId ? "Save changes" : "Add transaction"}
+                  </button>
                   {editingTransactionId && (
                     <button
                       type="button"
@@ -1635,37 +1882,38 @@ export default function Home() {
                       }}
                       className="h-9 rounded-[7px] border border-[#e3e8e2] px-3 text-[10px] font-medium text-[#6d7971]"
                     >
-                      Cancel
+                      Cancel edit
                     </button>
                   )}
-                  <button
-                    disabled={!isOpen}
-                    type="submit"
-                    className="flex h-9 items-center justify-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white transition hover:bg-[#245745] disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    {editingTransactionId ? <Check size={13} /> : <Plus size={13} />}
-                    {editingTransactionId ? "Save changes" : "Add transaction"}
-                  </button>
                 </div>
               </form>
-
               <div className="mt-4 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
-                <div className="border-b border-[#edf0ec] px-4 py-2.5">
-                  <h3 className="m-0 text-[11px] font-semibold">
-                    Today’s Transactions ({todayTransactions.length})
-                  </h3>
+                <div className="flex items-center justify-between border-b border-[#edf0ec] px-4 py-3">
+                  <div>
+                    <h3 className="m-0 text-[12px] font-semibold">
+                      Session transactions
+                    </h3>
+                    <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                      {todayTransactions.length} records ·{" "}
+                      {formatDate(activeDate, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </p>
+                  </div>
                 </div>
                 {todayTransactions.length ? (
                   <div className="divide-y divide-[#edf0ec]">
                     {todayTransactions.map((transaction) => (
                       <div
                         key={transaction.id}
-                        className="flex items-center gap-2.5 px-3.5 py-2.5"
+                        className="flex items-center gap-3 px-3.5 py-3"
                       >
                         <span
-                          className={`grid size-7 shrink-0 place-items-center rounded-[6px] ${kindColors[transaction.kind]}`}
+                          className={`grid size-8 shrink-0 place-items-center rounded-[8px] ${kindColors[transaction.kind]}`}
                         >
-                          <span className="text-[10px] font-semibold">
+                          <span className="text-[11px] font-semibold">
                             {transaction.kind === "CASH_IN"
                               ? "↓"
                               : transaction.kind === "CASH_OUT"
@@ -1677,9 +1925,10 @@ export default function Home() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <p className="m-0 truncate text-[10px] font-semibold text-[#34443b]">
-                            {transaction.customer || kindLabel(transaction.kind)}
+                            {transaction.customer ||
+                              kindLabel(transaction.kind)}
                           </p>
-                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[8.5px] text-[#89948c]">
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-[#89948c]">
                             <span>{transaction.time}</span>
                             <TransactionChannels
                               accountList={ledger.accounts}
@@ -1692,24 +1941,26 @@ export default function Home() {
                             {formatMMK(transaction.amount)}
                           </p>
                           {transaction.commission > 0 && (
-                            <p className="number-font mb-0 mt-0.5 text-[8px] text-[#71816f]">
+                            <p className="number-font mb-0 mt-1 text-[8px] text-[#71816f]">
                               Fee {formatMMK(transaction.commission)}
                             </p>
                           )}
                         </div>
                         {isOpen && (
-                          <div className="flex gap-1 pl-1">
+                          <div className="flex gap-1">
                             <button
                               onClick={() => editTransaction(transaction)}
-                              className="grid size-6 place-items-center rounded-[5px] text-[#73877a] hover:bg-[#edf4e8]"
+                              aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
+                              className="grid size-7 place-items-center rounded-[6px] text-[#73877a] hover:bg-[#edf4e8]"
                             >
-                              <Pencil size={11} />
+                              <Pencil size={13} />
                             </button>
                             <button
                               onClick={() => removeTransaction(transaction.id)}
-                              className="grid size-6 place-items-center rounded-[5px] text-[#a36e5a] hover:bg-[#fff0e9]"
+                              aria-label={`Delete ${kindLabel(transaction.kind)} transaction`}
+                              className="grid size-7 place-items-center rounded-[6px] text-[#a36e5a] hover:bg-[#fff0e9]"
                             >
-                              <X size={12} />
+                              <X size={14} />
                             </button>
                           </div>
                         )}
@@ -1717,8 +1968,14 @@ export default function Home() {
                     ))}
                   </div>
                 ) : (
-                  <div className="px-4 py-8 text-center text-[10px] text-[#89948c]">
-                    No transactions yet today.
+                  <div className="px-4 py-9 text-center">
+                    <ReceiptText size={18} className="mx-auto text-[#a0aaa3]" />
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      No transactions in this session
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      New entries will appear here.
+                    </p>
                   </div>
                 )}
               </div>
@@ -1729,19 +1986,24 @@ export default function Home() {
             <section className="mb-7 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
               <div
                 id="reconciliation"
-                className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4"
+                className="scroll-mt-24 rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
               >
-                <div className="mb-3 flex items-start justify-between">
+                <div className="mb-4 flex items-start justify-between gap-3">
                   <div>
                     <h3 className="m-0 text-[13px] font-semibold">
                       Evening reconciliation
                     </h3>
-                    <p className="mb-0 mt-0.5 text-[10px] text-[#8b968d]">
-                      {formatDate(activeDate, { month: "short", day: "numeric" })}
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                      {formatDate(activeDate, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}{" "}
+                      · active accounts
                     </p>
                   </div>
-                  <span className="grid size-7 place-items-center rounded-[6px] bg-[#eef5e7] text-[#6a913f]">
-                    <CircleCheck size={14} />
+                  <span className="grid size-8 place-items-center rounded-[7px] bg-[#eef5e7] text-[#6a913f]">
+                    <CircleCheck size={16} />
                   </span>
                 </div>
                 <div className="overflow-hidden rounded-[8px] border border-[#edf0ec]">
@@ -1753,56 +2015,159 @@ export default function Home() {
                   ].map(([label, amount, sign]) => (
                     <div
                       key={label}
-                      className="flex items-center justify-between border-b border-[#edf0ec] px-3 py-2 last:border-0"
+                      className="flex items-center justify-between border-b border-[#edf0ec] px-3.5 py-2.5 last:border-0"
                     >
-                      <span className="text-[10px] text-[#758178]">{label}</span>
+                      <span className="text-[10px] text-[#758178]">
+                        {label}
+                      </span>
                       <span className="number-font text-[10px] font-medium text-[#3a4940]">
                         {sign === "#" ? "" : sign}
-                        {formatMMK(Number(amount))} MMK
+                        {formatMMK(Number(amount))}{" "}
+                        <span className="text-[8px] text-[#a0aaa2]">MMK</span>
                       </span>
                     </div>
                   ))}
-                  <div className="flex items-center justify-between bg-[#f4f7f1] px-3 py-2.5">
+                  <div className="flex items-center justify-between bg-[#f4f7f1] px-3.5 py-3">
                     <span className="text-[10px] font-semibold text-[#304439]">
                       System closing
                     </span>
-                    <span className="number-font text-[12px] font-semibold text-[#21392b]">
-                      {formatMMK(systemClosing)} MMK
+                    <span className="number-font text-[13px] font-semibold text-[#21392b]">
+                      {formatMMK(systemClosing)}{" "}
+                      <span className="text-[8px] font-medium">MMK</span>
                     </span>
                   </div>
                 </div>
-
                 {todaySession?.closingBalance != null && (
                   <div
-                    className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2 text-[10px] ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}
+                    className={`mt-3 flex items-center justify-between rounded-[7px] px-3 py-2.5 ${closingDifference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#b05a3b]"}`}
                   >
-                    <span className="font-semibold">
-                      {closingDifference === 0 ? "Balanced" : "Discrepancy"} (Actual: {formatMMK(todaySession.closingBalance)})
+                    <span className="flex items-center gap-1.5 text-[10px] font-semibold">
+                      {closingDifference === 0 ? (
+                        <CircleCheck size={13} />
+                      ) : (
+                        <CircleAlert size={13} />
+                      )}
+                      {closingDifference === 0 ? "Balanced" : "Discrepancy"}
+                      <span className="font-normal opacity-70">
+                        · actual {formatMMK(todaySession.closingBalance)} MMK
+                      </span>
                     </span>
-                    <span className="number-font font-semibold">
+                    <span className="number-font text-[11px] font-semibold">
                       {closingDifference === 0
-                        ? "0 MMK"
-                        : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))} MMK`}
+                        ? "0"
+                        : `${closingDifference! > 0 ? "+" : "−"}${formatMMK(Math.abs(closingDifference!))}`}{" "}
+                      MMK
                     </span>
                   </div>
                 )}
+                {isOpen && (
+                  <button
+                    onClick={startClosingFlow}
+                    className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                  >
+                    <Check size={14} />
+                    Enter actual cash & close
+                  </button>
+                )}
+                {!todaySession && (
+                  <button
+                    onClick={startOpeningFlow}
+                    className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
+                  >
+                    <Plus size={14} />
+                    Open session to begin
+                  </button>
+                )}
               </div>
-
-              <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4">
-                <h3 className="m-0 text-[13px] font-semibold">Session Activity</h3>
-                <div className="mt-3 space-y-3">
+              <div className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5">
+                <div className="mb-4 flex items-start justify-between">
+                  <div>
+                    <h3 className="m-0 text-[13px] font-semibold">
+                      Session activity
+                    </h3>
+                    <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                      Account movement in the session
+                    </p>
+                  </div>
+                  <span className="text-[9px] text-[#929d94]">
+                    {todayTransactions.length} records
+                  </span>
+                </div>
+                <div className="space-y-3.5">
                   {[
-                    { label: "Cash received", value: cashInTotal, color: "text-[#608c3f]" },
-                    { label: "Cash paid out", value: cashOutTotal + expenseTotal, color: "text-[#bc7452]" },
-                    { label: "Fees earned", value: commissions, color: "text-[#5282a0]" },
+                    {
+                      label: "Cash received",
+                      value: cashInTotal,
+                      icon: ArrowDownLeft,
+                      color: "text-[#608c3f]",
+                      percent: systemClosing
+                        ? Math.min(
+                            (cashInTotal / Math.abs(systemClosing || 1)) * 100,
+                            100,
+                          )
+                        : 0,
+                    },
+                    {
+                      label: "Cash paid out",
+                      value: cashOutTotal + expenseTotal,
+                      icon: ArrowUpRight,
+                      color: "text-[#bc7452]",
+                      percent: systemClosing
+                        ? Math.min(
+                            ((cashOutTotal + expenseTotal) /
+                              Math.abs(systemClosing || 1)) *
+                              100,
+                            100,
+                          )
+                        : 0,
+                    },
+                    {
+                      label: "Fees earned",
+                      value: commissions,
+                      icon: TrendingUp,
+                      color: "text-[#5282a0]",
+                      percent: systemClosing
+                        ? Math.min(
+                            (commissions / Math.abs(systemClosing || 1)) * 100,
+                            100,
+                          )
+                        : 0,
+                    },
                   ].map((item) => (
-                    <div key={item.label} className="flex justify-between text-[10px]">
-                      <span className="text-[#6f7b73]">{item.label}</span>
-                      <span className="number-font font-semibold text-[#34443b]">
-                        {formatMMK(item.value)} MMK
-                      </span>
+                    <div key={item.label}>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-[10px] text-[#6f7b73]">
+                          <item.icon size={13} className={item.color} />
+                          {item.label}
+                        </span>
+                        <span className="number-font text-[10px] font-semibold">
+                          {formatMMK(item.value)}{" "}
+                          <span className="text-[8px] font-normal text-[#9ba59d]">
+                            MMK
+                          </span>
+                        </span>
+                      </div>
+                      <div className="h-[5px] overflow-hidden rounded-full bg-[#f0f2ef]">
+                        <div
+                          className={`h-full rounded-full ${item.label === "Cash received" ? "bg-[#a9d47a]" : item.label === "Cash paid out" ? "bg-[#efb088]" : "bg-[#9bc9eb]"}`}
+                          style={{ width: `${item.percent}%` }}
+                        />
+                      </div>
                     </div>
                   ))}
+                </div>
+                <div className="mt-5 flex items-center justify-between border-t border-[#edf0ec] pt-3">
+                  <span className="flex items-center gap-1.5 text-[9px] text-[#89948c]">
+                    <Activity size={12} />
+                    Net drawer change
+                  </span>
+                  <span className="number-font text-[11px] font-semibold">
+                    {systemClosing - openingBalance >= 0 ? "+" : "−"}
+                    {formatMMK(Math.abs(systemClosing - openingBalance))}{" "}
+                    <span className="text-[8px] font-normal text-[#9ba59d]">
+                      MMK
+                    </span>
+                  </span>
                 </div>
               </div>
             </section>
@@ -1810,95 +2175,372 @@ export default function Home() {
 
           {activeTab === "reports" && (
             <section id="reports" className="scroll-mt-24">
-              <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+              <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
                 <div>
-                  <h3 className="m-0 text-[13px] font-semibold">Reports</h3>
-                  <p className="mb-0 mt-0.5 text-[10px] text-[#8b968d]">
-                    Filter by date range and export
+                  <h3 className="m-0 text-[13px] font-semibold">
+                    Transaction register
+                  </h3>
+                  <p className="mb-0 mt-1 text-[10px] text-[#8b968d]">
+                    Search the ledger by date and export a statement
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="h-8 rounded-[7px] border border-[#e1e6e0] bg-white px-2 text-[9px]"
-                  />
-                  <span className="text-[10px] text-[#8b968d]">to</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="h-8 rounded-[7px] border border-[#e1e6e0] bg-white px-2 text-[9px]"
-                  />
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                    <span className="text-[9px] text-[#87928a]">From</span>
+                    <input
+                      aria-label="Start date"
+                      type="date"
+                      value={dateFrom}
+                      onChange={(event) => setDateFrom(event.target.value)}
+                      className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                    />
+                  </label>
+                  <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                    <span className="text-[9px] text-[#87928a]">To</span>
+                    <input
+                      aria-label="End date"
+                      type="date"
+                      value={dateTo}
+                      onChange={(event) => setDateTo(event.target.value)}
+                      className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                    />
+                  </label>
                 </div>
               </div>
-
-              <div className="mb-3 flex items-center justify-between rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2">
-                <div className="text-[9px] text-[#78847c]">
-                  Total {filteredTransactions.length} records in range
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[#e5e9e4] bg-white px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[9px] text-[#78847c]">
+                  <span className="flex items-center gap-1.5">
+                    <Search size={12} />
+                    {filteredTransactions.length} entries
+                  </span>
+                  <span>
+                    Inflow{" "}
+                    <b className="number-font text-[#4c7540]">
+                      {formatMMK(rangeInflow)} MMK
+                    </b>
+                  </span>
+                  <span>
+                    Outflow{" "}
+                    <b className="number-font text-[#ad6749]">
+                      {formatMMK(rangeOutflow)} MMK
+                    </b>
+                  </span>
                 </div>
-                <div className="flex gap-1.5">
+                <div className="flex items-center gap-1.5">
                   <button
                     onClick={exportExcel}
-                    className="grid size-7 place-items-center rounded-[6px] text-[#568447] hover:bg-[#eef5e7]"
                     title="Export Excel"
+                    aria-label="Export Excel"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#568447] transition hover:bg-[#eef5e7]"
                   >
                     <FileSpreadsheet size={15} />
                   </button>
                   <button
                     onClick={exportPdf}
-                    className="grid size-7 place-items-center rounded-[6px] text-[#62809a] hover:bg-[#edf4f8]"
-                    title="Export PDF"
+                    title="Export PDF summary"
+                    aria-label="Export PDF summary"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#62809a] transition hover:bg-[#edf4f8]"
                   >
                     <FileText size={15} />
                   </button>
                   <button
                     onClick={printThermalSlip}
-                    className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] hover:bg-[#fbf0e7]"
-                    title="Print 80mm Slip"
+                    title="Print 80 mm slip"
+                    aria-label="Print 80 mm slip"
+                    className="grid size-7 place-items-center rounded-[6px] text-[#a36e48] transition hover:bg-[#fbf0e7]"
                   >
                     <Printer size={15} />
                   </button>
                 </div>
               </div>
-
+              <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="border-b border-[#edf0ec] px-4 py-3">
+                  <h4 className="m-0 text-[11px] font-semibold">
+                    Daily session breakdown
+                  </h4>
+                  <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                    Active accounts and per-wallet reconciliation for each day
+                    in range
+                  </p>
+                </div>
+                <div className="table-scroll">
+                  <table className="w-full min-w-[900px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                        <th className="px-3 py-2.5">Date</th>
+                        <th className="px-3 py-2.5">Active wallet</th>
+                        <th className="px-3 py-2.5 text-right">Opening</th>
+                        <th className="px-3 py-2.5 text-right">Inflow</th>
+                        <th className="px-3 py-2.5 text-right">Outflow</th>
+                        <th className="px-3 py-2.5 text-right">
+                          System closing
+                        </th>
+                        <th className="px-3 py-2.5 text-right">
+                          Ground closing
+                        </th>
+                        <th className="px-3 py-2.5 text-right">Difference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportDailyRows.map((row) => (
+                        <tr
+                          key={`${row.date}-${row.accountId}`}
+                          className="border-b border-[#f0f2ef] last:border-0"
+                        >
+                          <td className="px-3 py-2.5 text-[9px] text-[#69766e]">
+                            {row.date}
+                          </td>
+                          <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                            <AccountBadge
+                              account={
+                                ledger.accounts.find(
+                                  (account) => account.id === row.accountId,
+                                ) ?? ledger.accounts[0]
+                              }
+                            />
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.opening)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                            {formatMMK(row.inflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#ad6749]">
+                            {formatMMK(row.outflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                            {formatMMK(row.systemClosing)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {row.groundClosing == null
+                              ? "—"
+                              : formatMMK(row.groundClosing)}
+                          </td>
+                          <td
+                            className={`number-font px-3 py-2.5 text-right text-[9px] font-semibold ${row.difference == null ? "text-[#9ba59d]" : row.difference === 0 ? "text-[#4f7937]" : "text-[#b05a3b]"}`}
+                          >
+                            {row.difference == null
+                              ? "—"
+                              : `${row.difference > 0 ? "+" : ""}${formatMMK(row.difference)}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {reportDailyRows.length === 0 && (
+                    <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                      No sessions in this date range.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="mb-4 rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="border-b border-[#edf0ec] px-4 py-3">
+                  <h4 className="m-0 text-[11px] font-semibold">
+                    Wallet-wise summary
+                  </h4>
+                  <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                    Net movement and earned commissions across the selected
+                    dates
+                  </p>
+                </div>
+                <div className="table-scroll">
+                  <table className="w-full min-w-[640px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                        <th className="px-3 py-2.5">Wallet</th>
+                        <th className="px-3 py-2.5 text-right">
+                          Opening total
+                        </th>
+                        <th className="px-3 py-2.5 text-right">Inflow</th>
+                        <th className="px-3 py-2.5 text-right">Outflow</th>
+                        <th className="px-3 py-2.5 text-right">Net volume</th>
+                        <th className="px-3 py-2.5 text-right">Commission</th>
+                        <th className="px-3 py-2.5 text-right">
+                          Latest system
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportWalletRows.map((row) => (
+                        <tr
+                          key={row.account.id}
+                          className="border-b border-[#f0f2ef] last:border-0"
+                        >
+                          <td className="px-3 py-2.5 text-[9px] font-medium text-[#45534a]">
+                            <AccountBadge account={row.account} />
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.opening)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.inflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.outflow)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] font-semibold">
+                            {formatMMK(row.net)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px] text-[#4c7540]">
+                            {formatMMK(row.commission)}
+                          </td>
+                          <td className="number-font px-3 py-2.5 text-right text-[9px]">
+                            {formatMMK(row.closing)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {reportWalletRows.length === 0 && (
+                    <p className="m-0 px-4 py-6 text-center text-[10px] text-[#89948c]">
+                      No wallet activity in this date range.
+                    </p>
+                  )}
+                </div>
+              </div>
               <div className="table-scroll rounded-[10px] border border-[#e4e8e3] bg-white">
-                <table className="w-full min-w-[700px] border-collapse text-left">
+                <table className="w-full min-w-[900px] border-collapse text-left">
                   <thead>
-                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8.5px] font-semibold uppercase text-[#929d95]">
-                      <th className="px-3 py-2">Date</th>
-                      <th className="px-3 py-2">Time</th>
-                      <th className="px-3 py-2">Type</th>
-                      <th className="px-3 py-2">Customer</th>
-                      <th className="px-3 py-2 text-right">Amount</th>
-                      <th className="px-3 py-2 text-right">Fee</th>
+                    <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[9px] font-semibold uppercase tracking-[1px] text-[#929d95]">
+                      <th className="px-4 py-3 font-semibold">Date</th>
+                      <th className="px-4 py-3 font-semibold">Time</th>
+                      <th className="px-4 py-3 font-semibold">Type</th>
+                      <th className="px-4 py-3 font-semibold">Customer</th>
+                      <th className="px-4 py-3 font-semibold">
+                        Account movement
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        Amount
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        Fee
+                      </th>
+                      <th className="w-10 px-3 py-3" />
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredTransactions.map((tx) => (
-                      <tr key={tx.id} className="border-b border-[#f0f2ef] text-[9px]">
-                        <td className="px-3 py-2 text-[#77837a]">{tx.date}</td>
-                        <td className="px-3 py-2 text-[#77837a]">{tx.time}</td>
-                        <td className="px-3 py-2">{kindLabel(tx.kind)}</td>
-                        <td className="px-3 py-2">{tx.customer || "Walk-in"}</td>
-                        <td className="number-font px-3 py-2 text-right font-medium">
-                          {formatMMK(tx.amount)} MMK
-                        </td>
-                        <td className="number-font px-3 py-2 text-right text-[#4c7540]">
-                          {tx.commission ? `${formatMMK(tx.commission)} MMK` : "—"}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredTransactions.map((transaction) => {
+                      const Icon = kindIcons[transaction.kind];
+                      return (
+                        <tr
+                          key={transaction.id}
+                          className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"
+                        >
+                          <td className="px-4 py-3 text-[9px] text-[#77837a]">
+                            {transaction.date}
+                          </td>
+                          <td className="px-4 py-3 text-[10px] text-[#77837a]">
+                            {transaction.time}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-[6px] px-2 py-1 text-[9px] font-medium ${kindColors[transaction.kind]}`}
+                            >
+                              <Icon size={11} />
+                              {kindLabel(transaction.kind)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="block max-w-[145px] truncate text-[10px] font-medium text-[#37463d]">
+                              {transaction.customer || "Walk-in customer"}
+                            </span>
+                            {transaction.phone && (
+                              <span className="mt-0.5 block text-[9px] text-[#9ba59d]">
+                                {transaction.phone}
+                              </span>
+                            )}
+                            {transaction.note && (
+                              <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">
+                                {transaction.note}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-[9px] text-[#768279]">
+                            <TransactionChannels
+                              accountList={ledger.accounts}
+                              transaction={transaction}
+                            />
+                          </td>
+                          <td className="number-font px-4 py-3 text-right text-[10px] font-semibold text-[#35443a]">
+                            {formatMMK(transaction.amount)}{" "}
+                            <span className="text-[8px] font-normal text-[#a0aaa3]">
+                              MMK
+                            </span>
+                          </td>
+                          <td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">
+                            {transaction.commission ? (
+                              <span className="inline-flex flex-col items-end gap-1">
+                                <span>{formatMMK(transaction.commission)}</span>
+                                <AccountBadge
+                                  account={
+                                    ledger.accounts.find(
+                                      (account) =>
+                                        account.id ===
+                                        commissionAccountId(transaction),
+                                    ) ?? ledger.accounts[0]
+                                  }
+                                  compact
+                                />
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            {transaction.date === activeDate && isOpen && (
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  onClick={() => editTransaction(transaction)}
+                                  aria-label={`Edit ${kindLabel(transaction.kind)} transaction`}
+                                  title="Edit transaction"
+                                  className="grid size-6 place-items-center rounded-[5px] text-[#73877a] hover:bg-[#edf4e8]"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    removeTransaction(transaction.id)
+                                  }
+                                  aria-label={`Remove ${kindLabel(transaction.kind)} transaction`}
+                                  title="Remove transaction"
+                                  className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
+                {filteredTransactions.length === 0 && (
+                  <div className="flex min-h-[126px] flex-col items-center justify-center px-4 text-center">
+                    <span className="grid size-8 place-items-center rounded-[8px] bg-[#f1f4ef] text-[#8a998c]">
+                      <ReceiptText size={15} />
+                    </span>
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      No transactions in this date range
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      Entries will appear here as you record them.
+                    </p>
+                  </div>
+                )}
               </div>
             </section>
           )}
+          <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-[#e3e8e2] pt-4 text-[9px] text-[#97a199] sm:flex-row">
+            <span>Ledger · Daily cash operations</span>
+            <span className="flex items-center gap-1.5">
+              <span className={`size-1.5 rounded-full ${isOnline ? "bg-[#a5cf73]" : "bg-[#d88b4a]"}`} />
+              {isOnline ? "Back Online" : "Offline Mode - Saved Locally"}
+            </span>
+          </footer>
         </div>
       </main>
-
-      {/* Fixed Bottom Navigation Bar */}
       <nav
         className="app-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-[#e0e6df] bg-white/95 backdrop-blur"
         aria-label="Primary navigation"
@@ -1908,185 +2550,393 @@ export default function Home() {
             { id: "overview", label: "Overview", icon: LayoutDashboard },
             { id: "wallet", label: "Wallet", icon: WalletCards },
             { id: "transactions", label: "Transactions", icon: ArrowLeftRight },
-            { id: "reconciliation", label: "Reconciliation", icon: CircleCheck },
+            {
+              id: "reconciliation",
+              label: "Reconciliation",
+              icon: CircleCheck,
+            },
             { id: "reports", label: "Reports", icon: FileText },
           ] as { id: AppTab; label: string; icon: IconComponent }[]
         ).map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
+          const colors = {
+            overview: {
+              active: "text-sky-600",
+              inactive: "text-sky-400",
+              background: "bg-sky-100",
+            },
+            wallet: {
+              active: "text-emerald-600",
+              inactive: "text-emerald-400",
+              background: "bg-emerald-100",
+            },
+            transactions: {
+              active: "text-orange-600",
+              inactive: "text-amber-500",
+              background: "bg-orange-100",
+            },
+            reconciliation: {
+              active: "text-violet-600",
+              inactive: "text-violet-400",
+              background: "bg-violet-100",
+            },
+            reports: {
+              active: "text-rose-600",
+              inactive: "text-rose-400",
+              background: "bg-rose-100",
+            },
+          }[tab.id];
           return (
             <button
               key={tab.id}
               type="button"
+              aria-current={active ? "page" : undefined}
               onClick={() => {
                 setActiveTab(tab.id);
                 window.scrollTo({ top: 0, behavior: "smooth" });
               }}
-              className={`flex h-full w-full min-w-0 flex-col items-center justify-center gap-0.5 border-l border-[#f0f2ef] px-0 pt-1.5 font-medium transition-colors first:border-l-0 ${active ? "text-[#315d3e]" : "text-[#87928a]"}`}
+              className={`flex h-full w-full min-w-0 flex-col items-center justify-center gap-0.5 border-l border-[#f0f2ef] px-0 pt-1.5 font-medium transition-colors first:border-l-0 ${active ? colors.active : colors.inactive}`}
             >
               <span
-                className={`grid size-7 place-items-center rounded-[8px] ${active ? "bg-[#eaf4e0]" : ""}`}
+                className={`grid size-7 place-items-center rounded-[8px] ${active ? colors.background : ""}`}
               >
                 <Icon size={18} strokeWidth={active ? 2.4 : 1.8} />
               </span>
-              <span className="nav-label text-[10px]">{tab.label}</span>
+              <span className="nav-label w-full max-w-full whitespace-nowrap text-center">
+                {tab.label}
+              </span>
             </button>
           );
         })}
       </nav>
 
-      {/* Admin Unlock Modal */}
       {modal === "admin" && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setModal(null);
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
           }}
         >
           <form
             onSubmit={confirmAdminUnlock}
-            className="w-full max-w-[380px] rounded-t-[12px] bg-white p-5 sm:rounded-[12px]"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="admin-dialog-title"
+            className="dialog-safe-area fade-up relative z-[51] w-full max-h-[calc(100dvh-env(safe-area-inset-top))] max-w-[400px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
           >
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="m-0 text-[14px] font-semibold">Admin Authorization</h3>
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  Admin authorization
+                </p>
+                <h2
+                  id="admin-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  {adminAction === "date"
+                    ? "Open past session"
+                    : "Reopen closed session"}
+                </h2>
+              </div>
               <button
                 type="button"
                 onClick={() => setModal(null)}
-                className="grid size-8 place-items-center rounded-[6px] text-[#66756b]"
+                aria-label="Close password dialog"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
             </div>
-            <p className="mb-3 text-[11px] text-[#7d8980]">
-              Enter admin password ("admin") to unlock.
+            <p className="mb-4 text-[11px] leading-5 text-[#7d8980]">
+              Enter the admin password to unlock{" "}
+              {formatDate(pendingDate, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}{" "}
+              for editing.
             </p>
-            <input
-              required
-              autoFocus
-              type="password"
-              placeholder="Password"
-              value={adminPassword}
-              onChange={(e) => {
-                setAdminPassword(e.target.value);
-                setAdminError("");
-              }}
-              className="w-full rounded-[7px] border border-[#e1e6e0] p-2 text-xs outline-none"
-            />
+            <label className="field-label">
+              Admin password
+              <span className="input-wrap mt-1.5">
+                <input
+                  required
+                  autoFocus
+                  type="password"
+                  autoComplete="current-password"
+                  value={adminPassword}
+                  onChange={(event) => {
+                    setAdminPassword(event.target.value);
+                    setAdminError("");
+                  }}
+                />
+              </span>
+            </label>
             {adminError && (
-              <p className="mb-0 mt-1.5 text-[10px] text-[#b05a3b]">{adminError}</p>
+              <p role="alert" className="mb-0 mt-2 text-[10px] text-[#b05a3b]">
+                {adminError}
+              </p>
             )}
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setModal(null)}
-                className="h-8 rounded-[7px] border border-[#e3e8e2] px-3 text-[10px]"
+                className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="h-8 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white"
+                className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
               >
-                Unlock
+                <Check size={13} />
+                Unlock session
               </button>
             </div>
           </form>
         </div>
       )}
-
-      {/* Wallet Management Modal */}
       {modal === "accounts" && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setModal(null);
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
           }}
         >
-          <div className="max-h-[85vh] w-full max-w-[650px] overflow-y-auto rounded-t-[12px] bg-white p-5 sm:rounded-[12px]">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="m-0 text-[15px] font-semibold">Wallets & Accounts</h3>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-dialog-title"
+            className="dialog-safe-area fade-up relative z-[51] max-h-[calc(100dvh-env(safe-area-inset-top))] w-full max-w-[720px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-5 flex items-start justify-between">
+              <div>
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  Workspace settings
+                </p>
+                <h2
+                  id="account-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  Wallets & accounts
+                </h2>
+                <p className="mb-0 mt-1 text-[10px] text-[#87928a]">
+                  Edit account details or archive accounts while preserving
+                  their history.
+                </p>
+              </div>
               <button
                 onClick={() => setModal(null)}
-                className="grid size-8 place-items-center rounded-[6px] text-[#66756b]"
+                aria-label="Close account settings"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
             </div>
-
-            <form onSubmit={submitAccount} className="mb-4 rounded-[8px] border border-[#e4e8e3] p-3.5">
-              <div className="grid gap-2.5 sm:grid-cols-2">
-                <input
-                  required
-                  placeholder="Account name (e.g. KBZPay)"
-                  value={accountForm.name}
-                  onChange={(e) =>
-                    setAccountForm((prev) => ({ ...prev, name: e.target.value }))
-                  }
-                  className="rounded-[6px] border border-[#e1e6e0] p-2 text-xs outline-none"
-                />
-                <input
-                  placeholder="Short label"
-                  value={accountForm.shortName}
-                  onChange={(e) =>
-                    setAccountForm((prev) => ({ ...prev, shortName: e.target.value }))
-                  }
-                  className="rounded-[6px] border border-[#e1e6e0] p-2 text-xs outline-none"
-                />
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {accountColorOptions.map((opt) => (
+            <form
+              onSubmit={submitAccount}
+              className="mb-5 rounded-[9px] border border-[#e4e8e3] bg-[#fafbf9] p-4"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="m-0 text-[11px] font-semibold">
+                  {editingAccountId ? "Edit account" : "Add account"}
+                </h3>
+                {editingAccountId && (
                   <button
-                    key={opt.id}
                     type="button"
-                    onClick={() =>
-                      setAccountForm((prev) => ({ ...prev, color: opt.id }))
-                    }
-                    className={`flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[9px] ${accountForm.color === opt.id ? "border-[#54764d] bg-[#f1f7eb]" : "border-[#e3e8e2]"}`}
+                    onClick={() => {
+                      setEditingAccountId(null);
+                      setAccountForm({
+                        name: "",
+                        shortName: "",
+                        kind: "wallet",
+                        accountNumber: "",
+                        color: "sky",
+                      });
+                    }}
+                    className="text-[9px] text-[#748078] underline underline-offset-2"
                   >
-                    <span
-                      className="size-2.5 rounded-full"
-                      style={{ backgroundColor: opt.swatch }}
-                    />
-                    {opt.name}
+                    Cancel edit
                   </button>
-                ))}
+                )}
               </div>
-
-              <div className="mt-3 flex justify-end">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="field-label">
+                  Account name
+                  <span className="input-wrap">
+                    <input
+                      required
+                      value={accountForm.name}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g. KBZPay Main"
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Display name
+                  <span className="input-wrap">
+                    <input
+                      value={accountForm.shortName}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          shortName: event.target.value,
+                        }))
+                      }
+                      placeholder="Short label for reports"
+                    />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Account type
+                  <span className="select-wrap">
+                    <select
+                      value={accountForm.kind}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          kind: event.target.value as AccountKind,
+                        }))
+                      }
+                    >
+                      {(["cash", "wallet", "qr", "bank"] as AccountKind[]).map(
+                        (kind) => (
+                          <option key={kind} value={kind}>
+                            {kind === "qr"
+                              ? "MMQR"
+                              : kind[0].toUpperCase() + kind.slice(1)}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    <ChevronDown size={14} />
+                  </span>
+                </label>
+                <label className="field-label">
+                  Account number{" "}
+                  <span className="optional-label">Optional</span>
+                  <span className="input-wrap">
+                    <input
+                      inputMode="text"
+                      value={accountForm.accountNumber}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          accountNumber: event.target.value,
+                        }))
+                      }
+                      placeholder="Wallet or bank account"
+                    />
+                  </span>
+                </label>
+              </div>
+              <fieldset className="mt-4 border-0 p-0">
+                <legend className="mb-2 text-[10px] font-semibold text-[#68766d]">
+                  Wallet color
+                </legend>
+                <div className="flex flex-wrap gap-2">
+                  {accountColorOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          color: option.id,
+                        }))
+                      }
+                      aria-pressed={accountForm.color === option.id}
+                      aria-label={option.name}
+                      title={option.name}
+                      className={`flex h-8 items-center gap-2 rounded-[7px] border px-2.5 text-[9px] font-medium transition ${accountForm.color === option.id ? "border-[#54764d] bg-white text-[#3d5143] ring-2 ring-[#dfead7]" : "border-[#e3e8e2] bg-white text-[#738078]"}`}
+                    >
+                      <span
+                        className="size-3 rounded-full border border-black/10"
+                        style={{ backgroundColor: option.swatch }}
+                      />
+                      {option.name}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <div className="mt-4 flex justify-end">
                 <button
                   type="submit"
-                  className="h-8 rounded-[6px] bg-[#173c31] px-3.5 text-[10px] font-semibold text-white"
+                  className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                 >
-                  {editingAccountId ? "Save Account" : "Add Account"}
+                  <Plus size={13} />
+                  {editingAccountId ? "Save account" : "Add account"}
                 </button>
               </div>
             </form>
-
-            <div className="space-y-1.5">
-              {ledger.accounts.map((acc) => (
+            <div className="space-y-2">
+              {ledger.accounts.map((account) => (
                 <div
-                  key={acc.id}
-                  className="flex items-center justify-between rounded-[7px] border border-[#e5e9e4] px-3 py-2 text-xs"
+                  key={account.id}
+                  className={`flex flex-wrap items-center gap-3 rounded-[8px] border px-3 py-2.5 ${account.deletedAt ? "border-dashed border-[#e5e9e4] bg-[#fafbf9] opacity-60" : "border-[#e5e9e4]"}`}
                 >
-                  <div className="flex items-center gap-2">
-                    <AccountBadge account={acc} compact />
-                    <span className="text-[#34443b]">{acc.name}</span>
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => editAccount(acc)}
-                      className="grid size-7 place-items-center text-[#688071]"
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    {acc.id !== "cash-drawer" && (
+                  <span
+                    className={`grid size-8 shrink-0 place-items-center rounded-[7px] text-[10px] font-bold ${accountColorBadge(account.color)}`}
+                  >
+                    {account.mark}
+                  </span>
+                  <span className="min-w-[120px] flex-1">
+                    <span className="block text-[10px] font-semibold text-[#34443b]">
+                      {account.name}
+                      {account.deletedAt && (
+                        <span className="ml-2 text-[8px] font-medium uppercase text-[#a07a5d]">
+                          Archived
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block text-[9px] text-[#8a958d]">
+                      {account.kind.toUpperCase()} ·{" "}
+                      {account.accountNumber || "No account number"}
+                    </span>
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {account.deletedAt ? (
                       <button
-                        onClick={() => deleteAccount(acc)}
-                        className="grid size-7 place-items-center text-[#a66e5a]"
+                        type="button"
+                        onClick={() => restoreAccount(account.id)}
+                        title="Restore account"
+                        aria-label={`Restore ${account.name}`}
+                        className="grid size-8 place-items-center rounded-[6px] text-[#62804f] hover:bg-[#eef5e7]"
                       >
-                        <Trash2 size={12} />
+                        <RotateCcw size={14} />
                       </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => editAccount(account)}
+                          title="Edit account"
+                          aria-label={`Edit ${account.name}`}
+                          className="grid size-8 place-items-center rounded-[6px] text-[#688071] hover:bg-[#f0f4ee]"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteAccount(account)}
+                          disabled={account.id === "cash-drawer"}
+                          title={
+                            account.id === "cash-drawer"
+                              ? "Cash drawer is required"
+                              : "Delete or archive account"
+                          }
+                          aria-label={`Delete ${account.name}`}
+                          className="grid size-8 place-items-center rounded-[6px] text-[#a66e5a] hover:bg-[#fff0e9] disabled:cursor-not-allowed disabled:opacity-30"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -2095,131 +2945,210 @@ export default function Home() {
           </div>
         </div>
       )}
-
-      {/* Opening / Closing Balances Modal */}
       {(modal === "open" || modal === "close") && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setModal(null);
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
           }}
         >
-          <div className="max-h-[85vh] w-full max-w-[400px] overflow-y-auto rounded-t-[12px] bg-white p-5 sm:rounded-[12px]">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="m-0 text-[14px] font-semibold">
-                {modal === "open" ? "Edit Opening Balance" : "Edit Closing Balance"}
-              </h3>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="session-dialog-title"
+            className="dialog-safe-area fade-up relative z-[51] w-full max-h-[calc(100dvh-env(safe-area-inset-top))] max-w-[420px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  {formatDate(activeDate, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </p>
+                <h2
+                  id="session-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  {modal === "open"
+                    ? `Edit ${formatDate(activeDate, { month: "short", day: "numeric" })} opening balances`
+                    : `Close ${formatDate(activeDate, { month: "short", day: "numeric" })} session`}
+                </h2>
+              </div>
               <button
                 onClick={() => setModal(null)}
-                className="grid size-8 place-items-center rounded-[6px] text-[#66756b]"
+                aria-label="Close dialog"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
             </div>
-
             {modal === "open" ? (
-              <form onSubmit={openSession} className="space-y-2.5">
-                {openingAccounts.map((acc) => {
-                  const selected = openingAccountIds.includes(acc.id);
-                  const isCash = acc.id === "cash-drawer";
-                  return (
-                    <div key={acc.id} className="rounded-[7px] border border-[#e5e9e4] p-2.5">
-                      <label className="flex items-center gap-2 text-xs font-medium text-[#34443b]">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          disabled={isCash}
-                          onChange={(e) => {
-                            setOpeningAccountIds((prev) =>
-                              e.target.checked
-                                ? [...prev, acc.id]
-                                : prev.filter((id) => id !== acc.id),
-                            );
-                            if (e.target.checked) {
-                              setOpeningAmounts((prev) => ({
-                                ...prev,
-                                [acc.id]: prev[acc.id] ?? "0",
-                              }));
-                            }
-                          }}
-                          className="accent-[#527d3a]"
-                        />
-                        <span>{acc.name}</span>
-                      </label>
-                      {selected && (
-                        <input
-                          required
-                          min="0"
-                          type="number"
-                          placeholder="Opening MMK"
-                          value={openingAmounts[acc.id] ?? "0"}
-                          onChange={(e) =>
-                            setOpeningAmounts((prev) => ({
-                              ...prev,
-                              [acc.id]: e.target.value,
-                            }))
-                          }
-                          className="mt-1.5 w-full rounded-[6px] border border-[#e1e6e0] p-1.5 text-xs outline-none"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                <div className="mt-4 flex justify-end gap-2">
+              <form onSubmit={openSession}>
+                <p className="mb-4 text-[11px] leading-5 text-[#7d8980]">
+                  {todaySession
+                    ? "Update the opening balances for this session. Editing does not change any other day."
+                    : "Every account starts at zero for a new day. Select this session’s wallets and enter their counted opening balances."}
+                </p>
+                <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                  {openingAccounts.map((account) => {
+                    const selected = openingAccountIds.includes(account.id);
+                    const requiredCash = account.id === "cash-drawer";
+                    return (
+                      <div
+                        key={account.id}
+                        className="rounded-[8px] border border-[#e5e9e4] p-3"
+                      >
+                        <label className="flex items-center gap-2 text-[11px] font-medium text-[#34443b]">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={requiredCash}
+                            onChange={(event) => {
+                              setOpeningAccountIds((current) =>
+                                event.target.checked
+                                  ? [...current, account.id]
+                                  : current.filter((id) => id !== account.id),
+                              );
+                              if (event.target.checked)
+                                setOpeningAmounts((current) => ({
+                                  ...current,
+                                  [account.id]: current[account.id] ?? "0",
+                                }));
+                            }}
+                            className="accent-[#527d3a]"
+                          />
+                          <span className="flex-1">
+                            {account.name}
+                            {requiredCash ? " · required" : ""}
+                          </span>
+                          <span className="text-[9px] font-normal text-[#8c978f]">
+                            {account.kind}
+                          </span>
+                        </label>
+                        {selected && (
+                          <label className="field-label mt-2">
+                            Opening balance · MMK
+                            <span className="input-wrap">
+                              <input
+                                required
+                                min="0"
+                                step="1"
+                                inputMode="numeric"
+                                type="number"
+                                value={openingAmounts[account.id] ?? "0"}
+                                onChange={(event) =>
+                                  setOpeningAmounts((current) => ({
+                                    ...current,
+                                    [account.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setModal(null)}
-                    className="h-8 rounded-[6px] border border-[#e3e8e2] px-3 text-[10px]"
+                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="h-8 rounded-[6px] bg-[#173c31] px-4 text-[10px] font-semibold text-white"
+                    className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                   >
-                    Save Opening
+                    <Check size={13} />
+                    Open session
                   </button>
                 </div>
               </form>
             ) : (
-              <form onSubmit={closeSession} className="space-y-2.5">
-                {todayActiveAccounts.map((acc) => (
-                  <div key={acc.id} className="rounded-[7px] border border-[#e5e9e4] p-2.5">
-                    <div className="mb-1 flex justify-between text-[11px] font-medium text-[#34443b]">
-                      <span>{acc.name}</span>
-                      <span className="text-[#6c7970]">
-                        Sys: {formatMMK(accountBalances[acc.id] ?? 0)}
-                      </span>
-                    </div>
-                    <input
-                      required
-                      min="0"
-                      type="number"
-                      placeholder="Actual Ground MMK"
-                      value={closingAmounts[acc.id] ?? ""}
-                      onChange={(e) =>
-                        setClosingAmounts((prev) => ({
-                          ...prev,
-                          [acc.id]: e.target.value,
-                        }))
-                      }
-                      className="w-full rounded-[6px] border border-[#e1e6e0] p-1.5 text-xs outline-none"
-                    />
-                  </div>
-                ))}
-                <div className="mt-4 flex justify-end gap-2">
+              <form onSubmit={closeSession}>
+                <div className="mb-4 rounded-[8px] bg-[#f4f7f1] p-3.5">
+                  <p className="m-0 text-[10px] font-semibold text-[#35463a]">
+                    Count ground balances for each active account.
+                  </p>
+                  <p className="mb-0 mt-1.5 text-[9px] leading-4 text-[#98a198]">
+                    System closing is calculated per wallet from its opening and
+                    recorded movements.
+                  </p>
+                </div>
+                <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                  {todayActiveAccounts.map((account) => {
+                    const system = accountBalances[account.id] ?? 0;
+                    const ground = closingAmounts[account.id] ?? "";
+                    const difference =
+                      ground === "" ? null : Number(ground) - system;
+                    return (
+                      <div
+                        key={account.id}
+                        className="rounded-[8px] border border-[#e5e9e4] p-3"
+                      >
+                        <div className="mb-2 flex items-center justify-between text-[10px]">
+                          <span className="font-semibold text-[#34443b]">
+                            {account.name}
+                          </span>
+                          <span className="number-font text-[#6c7970]">
+                            System {formatMMK(system)} MMK
+                          </span>
+                        </div>
+                        <label className="field-label">
+                          Ground balance · MMK
+                          <span className="input-wrap">
+                            <input
+                              required
+                              min="0"
+                              step="1"
+                              inputMode="numeric"
+                              type="number"
+                              value={ground}
+                              onChange={(event) =>
+                                setClosingAmounts((current) => ({
+                                  ...current,
+                                  [account.id]: event.target.value,
+                                }))
+                              }
+                            />
+                          </span>
+                        </label>
+                        {difference !== null && (
+                          <div
+                            className={`mt-2 flex justify-between rounded-[6px] px-2.5 py-2 text-[9px] ${difference === 0 ? "bg-[#eaf5df] text-[#4f7937]" : "bg-[#fff0e9] text-[#ae5c3e]"}`}
+                          >
+                            <span>
+                              {difference === 0 ? "Balanced" : "Discrepancy"}
+                            </span>
+                            <span className="number-font font-semibold">
+                              {difference > 0 ? "+" : ""}
+                              {formatMMK(difference)} MMK
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setModal(null)}
-                    className="h-8 rounded-[6px] border border-[#e3e8e2] px-3 text-[10px]"
+                    className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="h-8 rounded-[6px] bg-[#173c31] px-4 text-[10px] font-semibold text-white"
+                    className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                   >
-                    Close Session
+                    <Check size={13} />
+                    Close day
                   </button>
                 </div>
               </form>
