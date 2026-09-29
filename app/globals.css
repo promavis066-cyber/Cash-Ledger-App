@@ -65,6 +65,10 @@ button {
   touch-action: manipulation;
 }
 
+.dialog-safe-area {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+
 .nav-label {
   font-size: 8px;
   line-height: 10px;
@@ -152,7 +156,7 @@ button {
   background: transparent;
   padding: 0 10px;
   color: #35443a;
-  font-size: 11px;
+  font-size: 16px;
   font-weight: 450;
 }
 
@@ -170,6 +174,19 @@ button {
   right: 9px;
   color: #8d9990;
   pointer-events: none;
+}
+
+@media (min-width: 641px) {
+  .input-wrap input,
+  .select-wrap select {
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar-actions input[type="date"] {
+    font-size: 16px;
+  }
 }
 
 .fade-up {

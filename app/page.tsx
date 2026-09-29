@@ -1477,10 +1477,10 @@ export default function Home() {
                 </div>
                 <button
                   onClick={() => setModal("accounts")}
-                  className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce4da] bg-white px-3 text-[10px] font-semibold text-[#49604f]"
+                  className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-3 text-[10px] font-semibold text-white transition hover:bg-[#245745]"
                 >
                   <Plus size={13} />
-                  Manage accounts
+                  Manage Acc
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-8">
@@ -1625,13 +1625,11 @@ export default function Home() {
                               setFromAccountId(event.target.value as AccountId)
                             }
                           >
-                            {transactionAccounts
-                              .filter((account) => account.id !== "cash-drawer")
-                              .map((account) => (
-                                <option key={account.id} value={account.id}>
-                                  {account.name}
-                                </option>
-                              ))}
+                            {transactionAccounts.map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
                           </select>
                           <ChevronDown size={14} />
                         </span>
@@ -1655,13 +1653,11 @@ export default function Home() {
                               setToAccountId(event.target.value as AccountId)
                             }
                           >
-                            {transactionAccounts
-                              .filter((account) => account.id !== "cash-drawer")
-                              .map((account) => (
-                                <option key={account.id} value={account.id}>
-                                  {account.name}
-                                </option>
-                              ))}
+                            {transactionAccounts.map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
                           </select>
                           <ChevronDown size={14} />
                         </span>
@@ -1717,13 +1713,8 @@ export default function Home() {
                             setCommissionDestinationId(event.target.value)
                           }
                         >
-                          <option value="cash-drawer">
-                            Cash Drawer (ငွေသားထဲတိုးမည်)
-                          </option>
-                          <option value="related">
-                            Source/Target Wallet (သက်ဆိုင်ရာ Wallet/Account
-                            ထဲတိုးမည်)
-                          </option>
+                          <option value="cash-drawer">Cash Drawer</option>
+                          <option value="related">Selected Wallet</option>
                           {transactionAccounts.map((account) => (
                             <option key={account.id} value={account.id}>
                               {account.name}
@@ -2515,7 +2506,7 @@ export default function Home() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="admin-dialog-title"
-            className="fade-up w-full max-w-[400px] rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+            className="dialog-safe-area fade-up relative z-[51] w-full max-h-[calc(100dvh-env(safe-area-inset-top))] max-w-[400px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
           >
             <div className="mb-4 flex items-start justify-between">
               <div>
@@ -2535,7 +2526,7 @@ export default function Home() {
                 type="button"
                 onClick={() => setModal(null)}
                 aria-label="Close password dialog"
-                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
@@ -2600,7 +2591,7 @@ export default function Home() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="account-dialog-title"
-            className="fade-up max-h-[92vh] w-full max-w-[720px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+            className="dialog-safe-area fade-up relative z-[51] max-h-[calc(100dvh-env(safe-area-inset-top))] w-full max-w-[720px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
           >
             <div className="mb-5 flex items-start justify-between">
               <div>
@@ -2621,7 +2612,7 @@ export default function Home() {
               <button
                 onClick={() => setModal(null)}
                 aria-label="Close account settings"
-                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
@@ -2848,7 +2839,7 @@ export default function Home() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="session-dialog-title"
-            className="fade-up w-full max-w-[420px] rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+            className="dialog-safe-area fade-up relative z-[51] w-full max-h-[calc(100dvh-env(safe-area-inset-top))] max-w-[420px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
           >
             <div className="mb-4 flex items-start justify-between">
               <div>
@@ -2871,7 +2862,7 @@ export default function Home() {
               <button
                 onClick={() => setModal(null)}
                 aria-label="Close dialog"
-                className="grid size-7 place-items-center rounded-[6px] text-[#88938b] hover:bg-[#f2f4f1]"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
               >
                 <X size={16} />
               </button>
