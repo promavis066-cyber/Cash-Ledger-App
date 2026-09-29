@@ -1329,7 +1329,7 @@ export default function Home() {
                         ? `Closed at ${new Date(todaySession!.closedAt!).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}. Today’s figures are locked in.`
                         : "Enter the physical opening cash before you start recording today’s transactions."}
                   </p>
-                  <div className="flex items-center justify-between gap-3 border-t border-[#edf0ec] pt-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-[#edf0ec] pt-3.5">
                     <span className="text-[10px] text-[#87928a]">
                       {todayTransactions.length} transaction
                       {todayTransactions.length === 1 ? "" : "s"} today
@@ -1346,17 +1346,17 @@ export default function Home() {
                     {isOpen && (
                       <button
                         onClick={startClosingFlow}
-                        className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                        className="flex min-h-10 items-center justify-center rounded-[8px] bg-[#173c31] px-3.5 text-[10px] font-semibold text-white shadow-sm transition hover:bg-[#245745] active:translate-y-px"
                       >
-                        Reconcile & close
+                        Edit Closing Balance
                       </button>
                     )}
                     {isUnlocked && todaySession && (
                       <button
                         onClick={startOpeningFlow}
-                        className="text-[10px] font-semibold text-[#385e47] underline decoration-[#b5c5b6] underline-offset-4"
+                        className="flex min-h-10 items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-3.5 text-[10px] font-semibold text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
                       >
-                        Edit opening balances
+                        Edit Opening Balance
                       </button>
                     )}
                   </div>
