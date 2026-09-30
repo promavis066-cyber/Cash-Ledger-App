@@ -702,7 +702,9 @@ export default function Home() {
       Object.fromEntries(
         activeIds.map((id) => [
           id,
-          String(todaySession?.accountBalances.opening[id] ?? 0),
+          formatCurrencyInputValue(
+            String(todaySession?.accountBalances.opening[id] ?? 0),
+          ),
         ]),
       ),
     );
@@ -771,16 +773,20 @@ export default function Home() {
     const opening = Object.fromEntries(
       selectedAccounts.map((account) => [
         account.id,
-        Number(openingAmounts[account.id] || 0),
+        parseCurrencyInput(openingAmounts[account.id] ?? ""),
       ]),
     );
     if (
       selectedAccounts.some(
         (account) =>
-          !Number.isFinite(opening[account.id]) || opening[account.id] < 0,
+          !Number.isFinite(opening[account.id]) ||
+          !Number.isInteger(opening[account.id]) ||
+          opening[account.id] < 0,
       )
-    )
+    ) {
+      notify("Opening balances must be whole, non-negative amounts.");
       return;
+    }
     const newSession = {
       date: activeDate,
       activeAccountIds: selectedAccounts.map((account) => account.id),
@@ -3388,18 +3394,36 @@ export default function Home() {
                             Opening balance · MMK
                             <span className="input-wrap">
                               <input
-                                required
-                                min="0"
-                                step="1"
                                 inputMode="numeric"
-                                type="number"
+                                type="text"
                                 value={openingAmounts[account.id] ?? "0"}
+                                onFocus={(event) => {
+                                  if (event.currentTarget.value === "0") {
+                                    setOpeningAmounts((current) => ({
+                                      ...current,
+                                      [account.id]: "",
+                                    }));
+                                  }
+                                }}
                                 onChange={(event) =>
+                                  updateCurrencyInput(
+                                    event.currentTarget,
+                                    (value) =>
+                                      setOpeningAmounts((current) => ({
+                                        ...current,
+                                        [account.id]: value,
+                                      })),
+                                  )
+                                }
+                                onBlur={(event) => {
+                                  const formatted = formatCurrencyInputValue(
+                                    event.currentTarget.value,
+                                  );
                                   setOpeningAmounts((current) => ({
                                     ...current,
-                                    [account.id]: event.target.value,
-                                  }))
-                                }
+                                    [account.id]: formatted || "0",
+                                  }));
+                                }}
                               />
                             </span>
                           </label>
