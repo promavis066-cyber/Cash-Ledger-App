@@ -156,14 +156,121 @@ const kindIcons: Record<TransactionKind, IconComponent> = {
   EXPENSE: ReceiptText,
 };
 const kindColors: Record<TransactionKind, string> = {
-  CASH_IN: "bg-[#e9f6d9] text-[#437629]",
-  CASH_OUT: "bg-[#ffede7] text-[#b35c3b]",
-  TRANSFER: "bg-[#e8f2f9] text-[#477a9c]",
-  EXPENSE: "bg-[#f3edf5] text-[#835b8b]",
+  CASH_IN: "bg-[#e8f2ff] text-[#2363c3]",
+  CASH_OUT: "bg-[#ffebeb] text-[#c43d4d]",
+  TRANSFER: "bg-[#fff2cc] text-[#9b6900]",
+  EXPENSE: "bg-[#e8f5e9] text-[#34804b]",
 };
 
 function getDateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatCurrencyInputValue(value: string) {
+  const sanitized = value.replace(/[^\d.]/g, "");
+  const decimalIndex = sanitized.indexOf(".");
+  const integerPart =
+    decimalIndex < 0 ? sanitized : sanitized.slice(0, decimalIndex);
+  const fractionPart =
+    decimalIndex < 0
+      ? ""
+      : `.${sanitized.slice(decimalIndex + 1).replace(/\./g, "")}`;
+  return `${integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${fractionPart}`;
+}
+
+function parseCurrencyInput(value: string) {
+  const sanitized = value.replace(/[^\d.]/g, "");
+  const decimalIndex = sanitized.indexOf(".");
+  const normalized =
+    decimalIndex < 0
+      ? sanitized
+      : `${sanitized.slice(0, decimalIndex + 1)}${sanitized
+          .slice(decimalIndex + 1)
+          .replace(/\./g, "")}`;
+  return Number(normalized && normalized !== "." ? normalized : 0);
+}
+
+function inputCaretAfterDigits(value: string, digitCount: number) {
+  if (digitCount <= 0) return 0;
+  let digitsSeen = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (/\d/.test(value[index])) digitsSeen += 1;
+    if (digitsSeen === digitCount) return index + 1;
+  }
+  return value.length;
+}
+
+function updateCurrencyInput(
+  input: HTMLInputElement,
+  setValue: (value: string) => void,
+) {
+  const prefixBeforeCaret = formatCurrencyInputValue(
+    input.value.slice(0, input.selectionStart ?? input.value.length),
+  );
+  const formatted = formatCurrencyInputValue(input.value);
+  setValue(formatted);
+  window.requestAnimationFrame(() => {
+    const caret = Math.min(prefixBeforeCaret.length, formatted.length);
+    input.setSelectionRange(caret, caret);
+  });
+}
+
+function formatMyanmarPhone(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 11);
+  if (!digits) return "";
+  const nationalDigits = digits.startsWith("09")
+    ? digits.slice(2)
+    : digits.startsWith("0")
+      ? digits.slice(1)
+      : digits;
+  const groupedDigits = nationalDigits
+    .slice(0, 9)
+    .replace(/(\d{3})(?=\d)/g, "$1 ");
+  return groupedDigits ? `09 ${groupedDigits}` : "09";
+}
+
+function updatePhoneInput(
+  input: HTMLInputElement,
+  setValue: (value: string) => void,
+) {
+  const rawDigits = input.value.replace(/\D/g, "");
+  const rawDigitsBeforeCaret = input.value
+    .slice(0, input.selectionStart ?? input.value.length)
+    .replace(/\D/g, "").length;
+  const formatted = formatMyanmarPhone(input.value);
+  const digitsBeforeCaret = rawDigits.startsWith("09")
+    ? rawDigitsBeforeCaret
+    : rawDigits.startsWith("0")
+      ? rawDigitsBeforeCaret <= 1
+        ? rawDigitsBeforeCaret
+        : rawDigitsBeforeCaret + 1
+      : rawDigitsBeforeCaret + 2;
+  setValue(formatted);
+  window.requestAnimationFrame(() => {
+    const caret = inputCaretAfterDigits(
+      formatted,
+      Math.min(digitsBeforeCaret, formatted.replace(/\D/g, "").length),
+    );
+    input.setSelectionRange(caret, caret);
+  });
+}
+
+function formatCustomerName(value: string) {
+  return value.replace(/[^A-Za-z ]/g, "").toUpperCase();
+}
+
+function updateCustomerNameInput(
+  input: HTMLInputElement,
+  setValue: (value: string) => void,
+) {
+  const validCharactersBeforeCaret = formatCustomerName(
+    input.value.slice(0, input.selectionStart ?? input.value.length),
+  ).length;
+  const formatted = formatCustomerName(input.value);
+  setValue(formatted);
+  window.requestAnimationFrame(() => {
+    input.setSelectionRange(validCharactersBeforeCaret, validCharactersBeforeCaret);
+  });
 }
 
 function escapeHtml(value: string) {
@@ -179,35 +286,57 @@ function escapeHtml(value: string) {
   });
 }
 
-async function persistLedgerRecord(payload: string) {
+function persistLedgerRecord(payload: string) {
   try {
     window.localStorage.setItem(STORAGE_KEY, payload);
-  } catch {
-    // localStorage can fail on restricted browsers or quota issues.
+  } catch (error) {
+    console.error("Failed to save ledger data to localStorage.", error);
+    return false;
   }
 
-  if (!("indexedDB" in window)) return;
+  if (!("indexedDB" in window)) return true;
 
-  const request = window.indexedDB.open("cash-ledger-db", 1);
-
-  request.onupgradeneeded = () => {
-    const db = request.result;
-    if (!db.objectStoreNames.contains("ledger")) {
-      db.createObjectStore("ledger");
-    }
-  };
-
-  await new Promise<void>((resolve) => {
+  try {
+    const request = window.indexedDB.open("cash-ledger-db", 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("ledger")) {
+        db.createObjectStore("ledger");
+      }
+    };
     request.onsuccess = () => {
       const db = request.result;
-      const transaction = db.transaction("ledger", "readwrite");
-      const store = transaction.objectStore("ledger");
-      store.put(payload, STORAGE_KEY);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => resolve();
+      try {
+        const transaction = db.transaction("ledger", "readwrite");
+        transaction.objectStore("ledger").put(payload, STORAGE_KEY);
+        transaction.oncomplete = () => db.close();
+        transaction.onerror = () => {
+          console.error(
+            "Failed to save ledger data to IndexedDB.",
+            transaction.error,
+          );
+          db.close();
+        };
+        transaction.onabort = () => {
+          console.error("IndexedDB aborted the ledger save.", transaction.error);
+          db.close();
+        };
+      } catch (error) {
+        console.error("Could not start the IndexedDB ledger save.", error);
+        db.close();
+      }
     };
-    request.onerror = () => resolve();
-  });
+    request.onerror = () => {
+      console.error("Could not open the ledger IndexedDB database.", request.error);
+    };
+    request.onblocked = () => {
+      console.error("The ledger IndexedDB save is blocked by another connection.");
+    };
+  } catch (error) {
+    console.error("Could not initialize the IndexedDB ledger save.", error);
+  }
+
+  return true;
 }
 
 function formatDate(
@@ -244,6 +373,19 @@ function transactionParty(
   return `Paid from ${accountName(accountList, transaction.fromAccountId)}`;
 }
 
+function transactionFlow(
+  accountList: AccountDefinition[],
+  transaction: LedgerTransaction,
+) {
+  const source = accountName(accountList, transaction.fromAccountId);
+  const destination = transaction.toAccountId
+    ? accountName(accountList, transaction.toAccountId)
+    : null;
+  return destination
+    ? `(-) ${source} (+) ${destination}`
+    : `(-) ${source}`;
+}
+
 function commissionAccountId(transaction: LedgerTransaction): AccountId {
   return transaction.commissionAccountId ?? "cash-drawer";
 }
@@ -268,6 +410,8 @@ export default function Home() {
   const [serviceAccountId, setServiceAccountId] = useState<AccountId>("kbzpay");
   const [fromAccountId, setFromAccountId] = useState<AccountId>("kbzpay");
   const [toAccountId, setToAccountId] = useState<AccountId>("wavemoney");
+  const [expenseAccountId, setExpenseAccountId] =
+    useState<AccountId>("cash-drawer");
   const [commissionDestinationId, setCommissionDestinationId] =
     useState("cash-drawer");
   const [accountForm, setAccountForm] = useState<
@@ -297,12 +441,15 @@ export default function Home() {
   const [customerInput, setCustomerInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [noteInput, setNoteInput] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [sessionKindFilter, setSessionKindFilter] =
+    useState<TransactionKind | "ALL">("ALL");
+  const [sessionWalletFilter, setSessionWalletFilter] =
+    useState<AccountId | "ALL">("ALL");
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
-  const [isOnline, setIsOnline] = useState(
-    typeof navigator === "undefined" ? true : navigator.onLine,
-  );
+  const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -334,7 +481,8 @@ export default function Home() {
           const parsed = JSON.parse(savedLedger) as LedgerData;
           setLedger(normalizeLedger(parsed));
         }
-      } catch {
+      } catch (error) {
+        console.error("Failed to load locally saved ledger data.", error);
         setMessage("Saved ledger data could not be read on this device.");
       }
       setHydrated(true);
@@ -367,6 +515,42 @@ export default function Home() {
       ),
     [ledger.transactions, activeDate],
   );
+  const sessionTransactions = useMemo(() => {
+    const query = sessionSearch.trim().toLowerCase();
+    return todayTransactions.filter((transaction) => {
+      const matchesKind =
+        sessionKindFilter === "ALL" || transaction.kind === sessionKindFilter;
+      const matchesWallet =
+        sessionWalletFilter === "ALL" ||
+        transaction.fromAccountId === sessionWalletFilter ||
+        transaction.toAccountId === sessionWalletFilter ||
+        commissionAccountId(transaction) === sessionWalletFilter;
+      const searchableText = [
+        transaction.customer,
+        transaction.phone,
+        transaction.note,
+        transaction.date,
+        transaction.time,
+        kindLabel(transaction.kind),
+        accountName(ledger.accounts, transaction.fromAccountId),
+        accountName(ledger.accounts, transaction.toAccountId),
+        accountName(ledger.accounts, commissionAccountId(transaction)),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return (
+        matchesKind &&
+        matchesWallet &&
+        (!query || searchableText.includes(query))
+      );
+    });
+  }, [
+    ledger.accounts,
+    sessionKindFilter,
+    sessionSearch,
+    sessionWalletFilter,
+    todayTransactions,
+  ]);
   const filteredTransactions = useMemo(
     () =>
       ledger.transactions.filter(
@@ -417,6 +601,8 @@ export default function Home() {
   const transactionAccounts = isOpen
     ? todayActiveAccounts.filter((account) => !account.deletedAt)
     : accounts;
+  const transferAccountError =
+    transactionKind === "TRANSFER" && fromAccountId === toAccountId;
   const closingDifference =
     todaySession?.closingBalance == null
       ? null
@@ -656,8 +842,8 @@ export default function Home() {
 
   function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const amount = Number(amountInput);
-    const commission = Number(commissionInput || 0);
+    const amount = parseCurrencyInput(amountInput);
+    const commission = parseCurrencyInput(commissionInput);
     if (!isOpen) {
       notify("Open or unlock this session before recording transactions.");
       return;
@@ -677,9 +863,11 @@ export default function Home() {
     const selectedSource =
       transactionKind === "CASH_IN"
         ? serviceAccountId
-        : transactionKind === "CASH_OUT" || transactionKind === "EXPENSE"
+        : transactionKind === "CASH_OUT"
           ? "cash-drawer"
-          : fromAccountId;
+          : transactionKind === "EXPENSE"
+            ? expenseAccountId
+            : fromAccountId;
     const selectedDestination =
       transactionKind === "CASH_IN"
         ? "cash-drawer"
@@ -699,9 +887,11 @@ export default function Home() {
     const isCashOut = transactionKind === "CASH_OUT";
     const source: AccountId = isCashIn
       ? serviceAccountId
-      : isCashOut || transactionKind === "EXPENSE"
+      : isCashOut
         ? "cash-drawer"
-        : fromAccountId;
+        : transactionKind === "EXPENSE"
+          ? expenseAccountId
+          : fromAccountId;
     const destination: AccountId | null = isCashIn
       ? "cash-drawer"
       : isCashOut
@@ -733,7 +923,7 @@ export default function Home() {
         now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
       kind: transactionKind,
       customer: customerInput.trim(),
-      phone: phoneInput.trim(),
+      phone: transactionKind === "TRANSFER" ? "" : phoneInput.trim(),
       amount,
       commission,
       commissionAccountId: commissionDestination,
@@ -741,16 +931,28 @@ export default function Home() {
       fromAccountId: source,
       toAccountId: destination,
     };
-    setLedger((current) => ({
-      ...current,
+    const wasEditing = Boolean(editingTransactionId);
+    const nextLedger: LedgerData = {
+      ...ledger,
       transactions: editingTransactionId
-        ? current.transactions.map((item) =>
+        ? ledger.transactions.map((item) =>
             item.id === editingTransactionId
               ? { ...transaction, id: editingTransactionId }
               : item,
           )
-        : [transaction, ...current.transactions],
-    }));
+        : [transaction, ...ledger.transactions],
+    };
+    try {
+      if (!persistLedgerRecord(JSON.stringify(nextLedger))) {
+        notify("Could not save this transaction to local storage.");
+        return;
+      }
+      setLedger(nextLedger);
+    } catch (error) {
+      console.error("Failed to save transaction locally.", error);
+      notify("Could not save this transaction to local storage.");
+      return;
+    }
     setEditingTransactionId(null);
     setAmountInput("");
     setCommissionInput("");
@@ -758,22 +960,24 @@ export default function Home() {
     setPhoneInput("");
     setNoteInput("");
     notify(
-      editingTransactionId
-        ? "Transaction updated."
-        : `${kindLabel(transactionKind)} recorded.`,
+      !window.navigator.onLine
+        ? "Saved to Local Storage successfully."
+        : wasEditing
+          ? "Transaction updated and saved locally."
+          : `${kindLabel(transactionKind)} saved locally.`,
     );
   }
 
   function editTransaction(transaction: LedgerTransaction) {
     setEditingTransactionId(transaction.id);
     setTransactionKind(transaction.kind);
-    setAmountInput(String(transaction.amount));
-    setCommissionInput(String(transaction.commission));
+    setAmountInput(formatCurrencyInputValue(String(transaction.amount)));
+    setCommissionInput(formatCurrencyInputValue(String(transaction.commission)));
     setCommissionDestinationId(
       transaction.commissionAccountId ?? "cash-drawer",
     );
-    setCustomerInput(transaction.customer);
-    setPhoneInput(transaction.phone);
+    setCustomerInput(formatCustomerName(transaction.customer));
+    setPhoneInput(formatMyanmarPhone(transaction.phone));
     setNoteInput(transaction.note);
     if (transaction.kind === "CASH_IN")
       setServiceAccountId(transaction.fromAccountId);
@@ -783,6 +987,8 @@ export default function Home() {
       setFromAccountId(transaction.fromAccountId);
       setToAccountId(transaction.toAccountId ?? transaction.fromAccountId);
     }
+    if (transaction.kind === "EXPENSE")
+      setExpenseAccountId(transaction.fromAccountId);
     setTimeout(
       () =>
         document
@@ -1249,7 +1455,11 @@ export default function Home() {
               <span
                 className={`size-1.5 rounded-full ${isOnline ? "bg-[#53a766]" : "bg-[#d28a4d]"}`}
               />
-              {isOnline ? "Back Online" : "Offline Mode - Saved Locally"}
+              {isOnline ? (
+                "Back Online"
+              ) : (
+                <>Offline Mode · {ledger.transactions.length} saved locally</>
+              )}
             </div>
             {isOpen ? (
               <button
@@ -1756,55 +1966,14 @@ export default function Home() {
                   )}
                   {transactionKind === "EXPENSE" && (
                     <label className="field-label">
-                      Paid from
-                      <span className="flex h-[38px] items-center rounded-[7px] border border-[#e3e8e2] bg-[#f8faf7] px-3 text-[11px] font-normal text-[#536258]">
-                        Cash in drawer
-                      </span>
-                    </label>
-                  )}
-                  <label className="field-label">
-                    Amount · MMK
-                    <span className="input-wrap">
-                      <input
-                        required
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        type="number"
-                        placeholder="0"
-                        value={amountInput}
-                        onChange={(event) => setAmountInput(event.target.value)}
-                      />
-                    </span>
-                  </label>
-                  <label className="field-label">
-                    Commission · MMK
-                    <span className="input-wrap">
-                      <input
-                        min="0"
-                        step="1"
-                        inputMode="numeric"
-                        type="number"
-                        placeholder="0"
-                        value={commissionInput}
-                        onChange={(event) =>
-                          setCommissionInput(event.target.value)
-                        }
-                      />
-                    </span>
-                  </label>
-                  {Number(commissionInput) > 0 && (
-                    <label className="field-label">
-                      Commission Received In
+                      Expense paid from
                       <span className="select-wrap">
                         <select
-                          value={commissionDestinationId}
+                          value={expenseAccountId}
                           onChange={(event) =>
-                            setCommissionDestinationId(event.target.value)
+                            setExpenseAccountId(event.target.value as AccountId)
                           }
                         >
-                          <option value="cash-drawer">Cash Drawer</option>
-                          <option value="related">Selected Wallet</option>
                           {transactionAccounts.map((account) => (
                             <option key={account.id} value={account.id}>
                               {account.name}
@@ -1816,7 +1985,73 @@ export default function Home() {
                     </label>
                   )}
                   <label className="field-label">
-                    Customer name{" "}
+                    Amount · MMK
+                    <span className="input-wrap">
+                      <input
+                        required
+                        inputMode="decimal"
+                        type="text"
+                        placeholder="0"
+                        value={amountInput}
+                        onChange={(event) =>
+                          updateCurrencyInput(event.currentTarget, setAmountInput)
+                        }
+                      />
+                    </span>
+                  </label>
+                  <label className="field-label">
+                    Commission · MMK
+                    <span className="input-wrap">
+                      <input
+                        inputMode="decimal"
+                        type="text"
+                        placeholder="0"
+                        value={commissionInput}
+                        onChange={(event) =>
+                          updateCurrencyInput(
+                            event.currentTarget,
+                            setCommissionInput,
+                          )
+                        }
+                      />
+                    </span>
+                  </label>
+                  {parseCurrencyInput(commissionInput) > 0 && (
+                    <label className="field-label">
+                      Commission Received In
+                      <span className="select-wrap">
+                        <select
+                          value={commissionDestinationId}
+                          onChange={(event) =>
+                            setCommissionDestinationId(event.target.value)
+                          }
+                        >
+                          <option value="cash-drawer">Cash Drawer</option>
+                          <option value="related">Selected Wallet</option>
+                          {transactionAccounts
+                            .filter(
+                              (account, index, accountList) =>
+                                account.id !== "cash-drawer" &&
+                                account.name.trim().toLowerCase() !==
+                                  "cash drawer" &&
+                                accountList.findIndex(
+                                  (candidate) => candidate.id === account.id,
+                                ) === index,
+                            )
+                            .map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name}
+                              </option>
+                            ))}
+                        </select>
+                        <ChevronDown size={14} />
+                      </span>
+                    </label>
+                  )}
+                  <label className="field-label">
+                    {transactionKind === "TRANSFER"
+                      ? "Transfer person"
+                      : "Customer name"}{" "}
                     <span className="optional-label">Optional</span>
                     <span className="input-wrap">
                       <input
@@ -1824,24 +2059,32 @@ export default function Home() {
                         placeholder="Name at counter"
                         value={customerInput}
                         onChange={(event) =>
-                          setCustomerInput(event.target.value)
+                          updateCustomerNameInput(
+                            event.currentTarget,
+                            setCustomerInput,
+                          )
                         }
                       />
                     </span>
                   </label>
-                  <label className="field-label">
-                    Phone number{" "}
-                    <span className="optional-label">Optional</span>
-                    <span className="input-wrap">
-                      <input
-                        autoComplete="tel"
-                        inputMode="tel"
-                        placeholder="09 xxx xxx xxx"
-                        value={phoneInput}
-                        onChange={(event) => setPhoneInput(event.target.value)}
-                      />
-                    </span>
-                  </label>
+                  {transactionKind !== "TRANSFER" && (
+                    <label className="field-label">
+                      Phone number{" "}
+                      <span className="optional-label">Optional</span>
+                      <span className="input-wrap">
+                        <input
+                          autoComplete="tel"
+                          inputMode="tel"
+                          placeholder="09 xxx xxx xxx"
+                          value={phoneInput}
+                          maxLength={14}
+                          onChange={(event) =>
+                            updatePhoneInput(event.currentTarget, setPhoneInput)
+                          }
+                        />
+                      </span>
+                    </label>
+                  )}
                   <label className="field-label sm:col-span-2">
                     Note <span className="optional-label">Optional</span>
                     <span className="input-wrap">
@@ -1853,12 +2096,17 @@ export default function Home() {
                     </span>
                   </label>
                 </div>
+                {transferAccountError && (
+                  <p role="alert" className="mb-0 mt-3 text-[10px] text-[#bd3c4a]">
+                    From and To accounts must be different for a transfer.
+                  </p>
+                )}
                 <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
                   <span className="text-[9px] text-[#99a39b]">
                     Transactions are saved in this browser on this device.
                   </span>
                   <button
-                    disabled={!isOpen}
+                    disabled={!isOpen || transferAccountError}
                     type="submit"
                     className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
                   >
@@ -1888,13 +2136,13 @@ export default function Home() {
                 </div>
               </form>
               <div className="mt-4 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
-                <div className="flex items-center justify-between border-b border-[#edf0ec] px-4 py-3">
+                <div className="flex flex-col gap-3 border-b border-[#edf0ec] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h3 className="m-0 text-[12px] font-semibold">
                       Session transactions
                     </h3>
                     <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
-                      {todayTransactions.length} records ·{" "}
+                      {sessionTransactions.length} of {todayTransactions.length} records ·{" "}
                       {formatDate(activeDate, {
                         month: "short",
                         day: "numeric",
@@ -1902,14 +2150,67 @@ export default function Home() {
                       })}
                     </p>
                   </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex h-8 min-w-[145px] flex-1 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2 sm:flex-none">
+                      <Search size={13} className="shrink-0 text-[#89948c]" />
+                      <input
+                        aria-label="Search session transactions"
+                        placeholder="Name, date, time, wallet"
+                        value={sessionSearch}
+                        onChange={(event) => setSessionSearch(event.target.value)}
+                        className="w-full min-w-0 bg-transparent text-[9px] text-[#46544b] outline-none"
+                      />
+                    </label>
+                    <select
+                      aria-label="Filter transactions by type"
+                      value={sessionKindFilter}
+                      onChange={(event) =>
+                        setSessionKindFilter(
+                          event.target.value as TransactionKind | "ALL",
+                        )
+                      }
+                      className="h-8 rounded-[7px] border border-[#e1e6e0] bg-white px-2 text-[9px] text-[#46544b]"
+                    >
+                      <option value="ALL">All types</option>
+                      {(
+                        ["CASH_IN", "CASH_OUT", "TRANSFER", "EXPENSE"] as
+                          TransactionKind[]
+                      ).map((kind) => (
+                        <option key={kind} value={kind}>
+                          {kindLabel(kind)}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Filter transactions by wallet"
+                      value={sessionWalletFilter}
+                      onChange={(event) =>
+                        setSessionWalletFilter(event.target.value)
+                      }
+                      className="h-8 max-w-full rounded-[7px] border border-[#e1e6e0] bg-white px-2 text-[9px] text-[#46544b]"
+                    >
+                      <option value="ALL">All wallets</option>
+                      {transactionAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                {todayTransactions.length ? (
+                {sessionTransactions.length ? (
                   <div className="divide-y divide-[#edf0ec]">
-                    {todayTransactions.map((transaction) => (
+                    {sessionTransactions.map((transaction, index) => (
                       <div
                         key={transaction.id}
                         className="flex items-center gap-3 px-3.5 py-3"
                       >
+                        <span
+                          aria-label={`Transaction number ${index + 1}`}
+                          className="w-5 shrink-0 text-center text-[9px] font-medium text-[#89948c]"
+                        >
+                          #{index + 1}
+                        </span>
                         <span
                           className={`grid size-8 shrink-0 place-items-center rounded-[8px] ${kindColors[transaction.kind]}`}
                         >
@@ -1925,25 +2226,40 @@ export default function Home() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <p className="m-0 truncate text-[10px] font-semibold text-[#34443b]">
-                            {transaction.customer ||
-                              kindLabel(transaction.kind)}
+                            {transaction.customer || "Walk-in"}
                           </p>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-[#89948c]">
+                            <span
+                              className={`rounded-[5px] px-1.5 py-0.5 font-medium ${kindColors[transaction.kind]}`}
+                            >
+                              {kindLabel(transaction.kind)}
+                            </span>
                             <span>{transaction.time}</span>
                             <TransactionChannels
                               accountList={ledger.accounts}
                               transaction={transaction}
                             />
                           </div>
+                          <p className="mb-0 mt-1 text-[9px] text-[#6f7b73]">
+                            {transactionFlow(ledger.accounts, transaction)}
+                          </p>
                         </div>
                         <div className="text-right">
                           <p className="number-font m-0 text-[10px] font-semibold">
                             {formatMMK(transaction.amount)}
                           </p>
                           {transaction.commission > 0 && (
-                            <p className="number-font mb-0 mt-1 text-[8px] text-[#71816f]">
-                              Fee {formatMMK(transaction.commission)}
-                            </p>
+                            <>
+                              <p className="number-font mb-0 mt-1 text-[8px] text-[#71816f]">
+                                Fee {formatMMK(transaction.commission)}
+                              </p>
+                              <p className="mb-0 mt-0.5 whitespace-nowrap text-[8px] text-[#89948c]">
+                                In {accountName(
+                                  ledger.accounts,
+                                  commissionAccountId(transaction),
+                                )}
+                              </p>
+                            </>
                           )}
                         </div>
                         {isOpen && (
@@ -1966,6 +2282,16 @@ export default function Home() {
                         )}
                       </div>
                     ))}
+                  </div>
+                ) : todayTransactions.length ? (
+                  <div className="px-4 py-9 text-center">
+                    <Search size={18} className="mx-auto text-[#a0aaa3]" />
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      No matching transactions
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      Adjust the search or filters to see more entries.
+                    </p>
                   </div>
                 ) : (
                   <div className="px-4 py-9 text-center">
@@ -2536,7 +2862,11 @@ export default function Home() {
             <span>Ledger · Daily cash operations</span>
             <span className="flex items-center gap-1.5">
               <span className={`size-1.5 rounded-full ${isOnline ? "bg-[#a5cf73]" : "bg-[#d88b4a]"}`} />
-              {isOnline ? "Back Online" : "Offline Mode - Saved Locally"}
+              {isOnline ? (
+                "Back Online"
+              ) : (
+                <>Offline Mode · {ledger.transactions.length} saved locally</>
+              )}
             </span>
           </footer>
         </div>
