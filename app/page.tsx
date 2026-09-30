@@ -102,22 +102,28 @@ function accountColorBadge(color: string) {
 function AccountBadge({
   account,
   compact = false,
+  flowSign,
 }: {
   account: AccountDefinition;
   compact?: boolean;
+  flowSign?: "(-)" | "(+)";
 }) {
   return (
     <span
       className={`inline-flex max-w-full items-center gap-1.5 rounded-[6px] ${compact ? "px-1.5 py-0.5 text-[8px]" : "px-2 py-1 text-[9px]"} font-medium ${accountColorBadge(account.color)}`}
     >
-      <span
-        className="size-1.5 shrink-0 rounded-full"
-        style={{
-          backgroundColor:
-            accountColorOptions.find((option) => option.id === account.color)
-              ?.swatch ?? "#c6f36b",
-        }}
-      />
+      {flowSign ? (
+        <span className="shrink-0 font-semibold">{flowSign}</span>
+      ) : (
+        <span
+          className="size-1.5 shrink-0 rounded-full"
+          style={{
+            backgroundColor:
+              accountColorOptions.find((option) => option.id === account.color)
+                ?.swatch ?? "#c6f36b",
+          }}
+        />
+      )}
       {account.shortName}
     </span>
   );
@@ -126,9 +132,11 @@ function AccountBadge({
 function TransactionChannels({
   accountList,
   transaction,
+  showFlowSigns = false,
 }: {
   accountList: AccountDefinition[];
   transaction: LedgerTransaction;
+  showFlowSigns?: boolean;
 }) {
   const from = accountList.find(
     (account) => account.id === transaction.fromAccountId,
@@ -138,11 +146,21 @@ function TransactionChannels({
   );
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
-      {from && <AccountBadge account={from} compact />}
+      {from && (
+        <AccountBadge
+          account={from}
+          compact
+          flowSign={showFlowSigns ? "(-)" : undefined}
+        />
+      )}
       {to && (
         <>
           <span className="text-[#98a39b]">→</span>
-          <AccountBadge account={to} compact />
+          <AccountBadge
+            account={to}
+            compact
+            flowSign={showFlowSigns ? "(+)" : undefined}
+          />
         </>
       )}
     </span>
@@ -371,19 +389,6 @@ function transactionParty(
   if (transaction.kind === "CASH_OUT")
     return `${accountName(accountList, transaction.fromAccountId)} → ${accountName(accountList, transaction.toAccountId)}`;
   return `Paid from ${accountName(accountList, transaction.fromAccountId)}`;
-}
-
-function transactionFlow(
-  accountList: AccountDefinition[],
-  transaction: LedgerTransaction,
-) {
-  const source = accountName(accountList, transaction.fromAccountId);
-  const destination = transaction.toAccountId
-    ? accountName(accountList, transaction.toAccountId)
-    : null;
-  return destination
-    ? `(-) ${source} (+) ${destination}`
-    : `(-) ${source}`;
 }
 
 function commissionAccountId(transaction: LedgerTransaction): AccountId {
@@ -2232,7 +2237,7 @@ export default function Home() {
                           aria-label={`Transaction number ${index + 1}`}
                           className="w-5 shrink-0 text-center text-[9px] font-medium text-[#89948c]"
                         >
-                          #{index + 1}
+                          {index + 1}
                         </span>
                         <span
                           className={`grid size-8 shrink-0 place-items-center rounded-[8px] ${kindColors[transaction.kind]}`}
@@ -2261,11 +2266,9 @@ export default function Home() {
                             <TransactionChannels
                               accountList={ledger.accounts}
                               transaction={transaction}
+                              showFlowSigns
                             />
                           </div>
-                          <p className="mb-0 mt-1 text-[9px] text-[#6f7b73]">
-                            {transactionFlow(ledger.accounts, transaction)}
-                          </p>
                         </div>
                         <div className="text-right">
                           <p className="number-font m-0 text-[10px] font-semibold">
