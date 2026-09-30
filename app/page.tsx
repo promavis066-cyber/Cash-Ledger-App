@@ -508,11 +508,7 @@ export default function Home() {
         todaySession.activeAccountIds.includes(account.id),
       )
     : [];
-  const openingAccounts = todaySession
-    ? ledger.accounts.filter((account) =>
-        todaySession.activeAccountIds.includes(account.id),
-      )
-    : accounts;
+  const openingAccounts = accounts;
   const todayTransactions = useMemo(
     () =>
       ledger.transactions.filter(
@@ -763,6 +759,7 @@ export default function Home() {
 
   function openSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const isUpdatingOpening = Boolean(todaySession);
     const selectedAccounts = (todaySession ? ledger.accounts : accounts).filter(
       (account) => openingAccountIds.includes(account.id),
     );
@@ -809,7 +806,11 @@ export default function Home() {
       ],
     }));
     setModal(null);
-    notify("Morning session opened. Opening balance recorded.");
+    notify(
+      isUpdatingOpening
+        ? "Opening balance updated successfully."
+        : "Morning session opened. Opening balance recorded.",
+    );
   }
 
   function closeSession(event: FormEvent<HTMLFormElement>) {
@@ -1052,24 +1053,53 @@ export default function Home() {
     } else {
       const id = `account-${crypto.randomUUID()}`;
       const colors = ["sky", "gold", "rose", "mint"];
+      const newAccount: AccountDefinition = {
+        id,
+        name,
+        shortName,
+        kind: accountForm.kind,
+        accountNumber: accountForm.accountNumber.trim(),
+        color:
+          accountForm.color ||
+          colors[ledger.accounts.length % colors.length],
+        mark: name.slice(0, 1).toUpperCase(),
+      };
+      const activateInCurrentSession = Boolean(
+        todaySession &&
+          (todaySession.closedAt === null || isUnlocked),
+      );
       setLedger((current) => ({
         ...current,
-        accounts: [
-          ...current.accounts,
-          {
-            id,
-            name,
-            shortName,
-            kind: accountForm.kind,
-            accountNumber: accountForm.accountNumber.trim(),
-            color:
-              accountForm.color ||
-              colors[current.accounts.length % colors.length],
-            mark: name.slice(0, 1).toUpperCase(),
-          },
-        ],
+        accounts: [...current.accounts, newAccount],
+        sessions: activateInCurrentSession
+          ? current.sessions.map((session) =>
+              session.date === activeDate
+                ? {
+                    ...session,
+                    activeAccountIds: session.activeAccountIds.includes(id)
+                      ? session.activeAccountIds
+                      : [...session.activeAccountIds, id],
+                    accountBalances: {
+                      ...session.accountBalances,
+                      opening: {
+                        ...session.accountBalances.opening,
+                        [id]: 0,
+                      },
+                      groundClosing: {
+                        ...session.accountBalances.groundClosing,
+                        [id]: null,
+                      },
+                    },
+                  }
+                : session,
+            )
+          : current.sessions,
       }));
-      notify("Account added.");
+      notify(
+        activateInCurrentSession
+          ? "Account added and activated in today’s session."
+          : "Account added.",
+      );
     }
     setEditingAccountId(null);
     setAccountForm({
@@ -1651,27 +1681,13 @@ export default function Home() {
                     )}
                   </div>
                   {(isOpen || (isUnlocked && todaySession)) && (
-                    <div className="mt-4 grid w-full grid-cols-2 gap-2">
-                      {isUnlocked && todaySession ? (
-                        <button
-                          onClick={startOpeningFlow}
-                          className="flex min-h-11 w-full items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-2 text-xs font-medium text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
-                        >
-                          Edit Opening Bal
-                        </button>
-                      ) : (
-                        <span aria-hidden="true" />
-                      )}
-                      {isOpen ? (
-                        <button
-                          onClick={startClosingFlow}
-                          className="flex min-h-11 w-full items-center justify-center rounded-[8px] bg-[#173c31] px-2 text-xs font-medium text-white shadow-sm transition hover:bg-[#245745] active:translate-y-px"
-                        >
-                          Edit Closing Bal
-                        </button>
-                      ) : (
-                        <span aria-hidden="true" />
-                      )}
+                    <div className="mt-4 grid w-full grid-cols-1 gap-2">
+                      <button
+                        onClick={startOpeningFlow}
+                        className="flex min-h-11 w-full items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-2 text-xs font-medium text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
+                      >
+                        Edit Opening Balance
+                      </button>
                     </div>
                   )}
                 </div>
