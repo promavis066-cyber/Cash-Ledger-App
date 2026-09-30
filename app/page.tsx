@@ -710,9 +710,22 @@ export default function Home() {
   function startClosingFlow() {
     setClosingAmounts(
       Object.fromEntries(
-        todayActiveAccounts.map((account) => [account.id, ""]),
+        todayActiveAccounts.map((account) => {
+          const systemBalance = accountBalances[account.id] ?? 0;
+          return [account.id, systemBalance === 0 ? "0" : ""];
+        }),
       ),
     );
+    const firstUncountedAccount = todayActiveAccounts.find(
+      (account) => (accountBalances[account.id] ?? 0) !== 0,
+    );
+    if (firstUncountedAccount) {
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`closing-balance-${firstUncountedAccount.id}`)
+          ?.focus();
+      });
+    }
     setModal("close");
   }
 
@@ -819,13 +832,14 @@ export default function Home() {
     const groundClosing = Object.fromEntries(
       todayActiveAccounts.map((account) => [
         account.id,
-        Number(closingAmounts[account.id] || 0),
+        parseCurrencyInput(closingAmounts[account.id] ?? ""),
       ]),
     );
     if (
       todayActiveAccounts.some(
         (account) =>
           !Number.isFinite(groundClosing[account.id]) ||
+          !Number.isInteger(groundClosing[account.id]) ||
           groundClosing[account.id] < 0,
       )
     )
@@ -3479,9 +3493,12 @@ export default function Home() {
                 <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
                   {todayActiveAccounts.map((account) => {
                     const system = accountBalances[account.id] ?? 0;
-                    const ground = closingAmounts[account.id] ?? "";
+                    const ground =
+                      closingAmounts[account.id] ??
+                      (system === 0 ? "0" : "");
+                    const parsedGround = parseCurrencyInput(ground);
                     const difference =
-                      ground === "" ? null : Number(ground) - system;
+                      ground === "" ? null : parsedGround - system;
                     return (
                       <div
                         key={account.id}
@@ -3499,18 +3516,38 @@ export default function Home() {
                           Ground balance · MMK
                           <span className="input-wrap">
                             <input
-                              required
-                              min="0"
-                              step="1"
                               inputMode="numeric"
-                              type="number"
+                              type="text"
+                              id={`closing-balance-${account.id}`}
+                              placeholder={system === 0 ? "0" : "Enter actual balance"}
                               value={ground}
+                              onFocus={(event) => {
+                                if (event.currentTarget.value === "0") {
+                                  setClosingAmounts((current) => ({
+                                    ...current,
+                                    [account.id]: "",
+                                  }));
+                                }
+                              }}
                               onChange={(event) =>
+                                updateCurrencyInput(
+                                  event.currentTarget,
+                                  (value) =>
+                                    setClosingAmounts((current) => ({
+                                      ...current,
+                                      [account.id]: value,
+                                    })),
+                                )
+                              }
+                              onBlur={(event) => {
+                                const formatted = formatCurrencyInputValue(
+                                  event.currentTarget.value,
+                                );
                                 setClosingAmounts((current) => ({
                                   ...current,
-                                  [account.id]: event.target.value,
-                                }))
-                              }
+                                  [account.id]: formatted || "0",
+                                }));
+                              }}
                             />
                           </span>
                         </label>
