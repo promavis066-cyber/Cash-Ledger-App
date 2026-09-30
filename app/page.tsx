@@ -156,10 +156,10 @@ const kindIcons: Record<TransactionKind, IconComponent> = {
   EXPENSE: ReceiptText,
 };
 const kindColors: Record<TransactionKind, string> = {
-  CASH_IN: "bg-[#e8f2ff] text-[#2363c3]",
-  CASH_OUT: "bg-[#ffebeb] text-[#c43d4d]",
-  TRANSFER: "bg-[#fff2cc] text-[#9b6900]",
-  EXPENSE: "bg-[#e8f5e9] text-[#34804b]",
+  CASH_IN: "bg-[#2563eb] text-white",
+  CASH_OUT: "bg-[#dc2626] text-white",
+  TRANSFER: "bg-[#fbbf24] text-[#422006]",
+  EXPENSE: "bg-[#16a34a] text-white",
 };
 
 function getDateKey(date: Date) {
@@ -843,7 +843,10 @@ export default function Home() {
   function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const amount = parseCurrencyInput(amountInput);
-    const commission = parseCurrencyInput(commissionInput);
+    const commission =
+      transactionKind === "TRANSFER" || transactionKind === "EXPENSE"
+        ? 0
+        : parseCurrencyInput(commissionInput);
     if (!isOpen) {
       notify("Open or unlock this session before recording transactions.");
       return;
@@ -922,8 +925,11 @@ export default function Home() {
         existingTransaction?.time ??
         now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
       kind: transactionKind,
-      customer: customerInput.trim(),
-      phone: transactionKind === "TRANSFER" ? "" : phoneInput.trim(),
+      customer: transactionKind === "EXPENSE" ? "" : customerInput.trim(),
+      phone:
+        transactionKind === "TRANSFER" || transactionKind === "EXPENSE"
+          ? ""
+          : phoneInput.trim(),
       amount,
       commission,
       commissionAccountId: commissionDestination,
@@ -1859,8 +1865,17 @@ export default function Home() {
                         role="tab"
                         aria-selected={transactionKind === kind}
                         key={kind}
-                        onClick={() => setTransactionKind(kind)}
-                        className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? "bg-[#173c31] text-white" : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
+                        onClick={() => {
+                          setTransactionKind(kind);
+                          if (kind === "TRANSFER" || kind === "EXPENSE") {
+                            setCommissionInput("");
+                          }
+                          if (kind === "EXPENSE") {
+                            setCustomerInput("");
+                            setPhoneInput("");
+                          }
+                        }}
+                        className={`flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] px-3 text-[10px] font-medium transition ${transactionKind === kind ? kindColors[kind] : "bg-[#f5f7f4] text-[#758178] hover:bg-[#edf1ec]"}`}
                       >
                         <Icon size={13} />
                         {kindLabel(kind)}
@@ -1999,24 +2014,29 @@ export default function Home() {
                       />
                     </span>
                   </label>
-                  <label className="field-label">
-                    Commission · MMK
-                    <span className="input-wrap">
-                      <input
-                        inputMode="decimal"
-                        type="text"
-                        placeholder="0"
-                        value={commissionInput}
-                        onChange={(event) =>
-                          updateCurrencyInput(
-                            event.currentTarget,
-                            setCommissionInput,
-                          )
-                        }
-                      />
-                    </span>
-                  </label>
-                  {parseCurrencyInput(commissionInput) > 0 && (
+                  {transactionKind !== "TRANSFER" &&
+                    transactionKind !== "EXPENSE" && (
+                      <label className="field-label">
+                        Commission · MMK
+                        <span className="input-wrap">
+                          <input
+                            inputMode="decimal"
+                            type="text"
+                            placeholder="0"
+                            value={commissionInput}
+                            onChange={(event) =>
+                              updateCurrencyInput(
+                                event.currentTarget,
+                                setCommissionInput,
+                              )
+                            }
+                          />
+                        </span>
+                      </label>
+                    )}
+                  {transactionKind !== "TRANSFER" &&
+                    transactionKind !== "EXPENSE" &&
+                    parseCurrencyInput(commissionInput) > 0 && (
                     <label className="field-label">
                       Commission Received In
                       <span className="select-wrap">
@@ -2048,26 +2068,29 @@ export default function Home() {
                       </span>
                     </label>
                   )}
-                  <label className="field-label">
-                    {transactionKind === "TRANSFER"
-                      ? "Transfer person"
-                      : "Customer name"}{" "}
-                    <span className="optional-label">Optional</span>
-                    <span className="input-wrap">
-                      <input
-                        autoComplete="name"
-                        placeholder="Name at counter"
-                        value={customerInput}
-                        onChange={(event) =>
-                          updateCustomerNameInput(
-                            event.currentTarget,
-                            setCustomerInput,
-                          )
-                        }
-                      />
-                    </span>
-                  </label>
-                  {transactionKind !== "TRANSFER" && (
+                  {transactionKind !== "EXPENSE" && (
+                    <label className="field-label">
+                      {transactionKind === "TRANSFER"
+                        ? "Transfer person"
+                        : "Customer name"}{" "}
+                      <span className="optional-label">Optional</span>
+                      <span className="input-wrap">
+                        <input
+                          autoComplete="name"
+                          placeholder="Name at counter"
+                          value={customerInput}
+                          onChange={(event) =>
+                            updateCustomerNameInput(
+                              event.currentTarget,
+                              setCustomerInput,
+                            )
+                          }
+                        />
+                      </span>
+                    </label>
+                  )}
+                  {transactionKind !== "TRANSFER" &&
+                    transactionKind !== "EXPENSE" && (
                     <label className="field-label">
                       Phone number{" "}
                       <span className="optional-label">Optional</span>
@@ -2084,7 +2107,7 @@ export default function Home() {
                         />
                       </span>
                     </label>
-                  )}
+                    )}
                   <label className="field-label sm:col-span-2">
                     Note <span className="optional-label">Optional</span>
                     <span className="input-wrap">
