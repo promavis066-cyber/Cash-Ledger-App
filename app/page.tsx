@@ -380,7 +380,7 @@ function extractReceiptFields(
       : undefined;
   };
   const nameLabel =
-    /^(?:transfer(?:red)?\s+to|transfer(?:red)?\s+from|received\s+from|receiver(?:\s+name)?|sender(?:\s+name)?|to|from|လက်ခံသူ|ပေးပို့သူ)\s*[:：\-]?\s*(.*)$/i;
+    /(?:transfer\s+to|transfer\s+from|received\s+from|receiver(?:\s+name)?|sender(?:\s+name)?|to|from)\s*[:：\-]?\s*([A-Za-z\s]*?)(?=\s*\(|[\r\n]|$)/i;
 
   for (let index = 0; index < lines.length; index += 1) {
     const nameLine = lines[index].match(nameLabel);
