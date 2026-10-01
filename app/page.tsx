@@ -292,77 +292,28 @@ function formatCustomerName(value: string) {
   return value.replace(/[^A-Za-z ]/g, "").toUpperCase();
 }
 
-function extractCustomerNameFromOCR(ocrText: string) {
+function getRawCustomerName(ocrText: string) {
   if (!ocrText) return "";
 
   const lines = ocrText
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const targetLines: string[] = [];
-  const stopKeywords = [
-    "amount",
-    "service fee",
-    "commission",
-    "total amount",
-    "notes",
-    "mmqr",
-    "mobile wallet",
-    "payment",
-    "save e-receipt",
-    "transaction id",
-    "status",
-    "date",
-    "time",
-    "successful",
-  ];
-  const headerPattern =
-    /^(?:transfer\s+to|transfer\s+from|transferred\s+to|transferred\s+from|received\s+from|to|from|receiver|sender)\b\s*[:：\-]?\s*(.*)$/i;
-  let capturing = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(
+      /(?:Transfer\s+To|Transfer\s+From)[:\s]*(.*)/i,
+    );
+    if (!match) continue;
 
-  for (const line of lines) {
-    const header = line.match(headerPattern);
-    if (header) {
-      if (capturing) break;
-      capturing = true;
-      const remainder = header[1].trim();
-      if (remainder) targetLines.push(remainder);
-      if (targetLines.length >= 2) break;
-      continue;
+    let rawText = match[1]?.trim() ?? "";
+    if (!rawText && index + 1 < lines.length) {
+      rawText = lines[index + 1].trim();
     }
 
-    if (!capturing) continue;
-    const lower = line.toLowerCase();
-    if (stopKeywords.some((keyword) => lower.startsWith(keyword))) break;
-    targetLines.push(line);
-    if (targetLines.length >= 2) break;
+    if (rawText) return rawText.toUpperCase();
   }
 
-  if (targetLines.length === 0) return "";
-
-  let combined = targetLines.join(" ");
-  combined = combined.replace(/\([^)]*\)/g, " ");
-  combined = combined.replace(/^\s*\d+[\s\-_:]*/, " ");
-  combined = combined.replace(/[\d*\-_:;()]+/g, " ");
-
-  const words = combined.match(/[A-Za-z]+/g);
-  if (!words) return "";
-
-  const blacklistedWords = new Set([
-    "KS",
-    "MMK",
-    "CASH",
-    "IN",
-    "OUT",
-    "DETAILS",
-    "PAYMENT",
-    "SUCCESSFUL",
-  ]);
-  return words
-    .filter((word) => !blacklistedWords.has(word.toUpperCase()))
-    .join(" ")
-    .toUpperCase()
-    .trim();
+  return "";
 }
 
 function normalizeMyanmarReceiptText(value: string) {
@@ -388,7 +339,7 @@ function extractReceiptFields(
   const amountDigits = amountMatch?.[2]?.replace(/\D/g, "");
   const amountValue = amountDigits ? Number(amountDigits) : undefined;
   const amountSign = amountMatch?.[1];
-  const customer = extractCustomerNameFromOCR(text);
+  const customer = getRawCustomerName(text);
 
   const normalizedAccountText = normalizedText
     .toLowerCase()
