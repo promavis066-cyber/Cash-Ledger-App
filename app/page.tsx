@@ -34,6 +34,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -57,8 +58,20 @@ type AppTab =
   "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
+type CustomerDirectoryEntry = {
+  id: string;
+  name: string;
+  phone: string;
+  lastUsed: string;
+};
 
 const ADMIN_PASSWORD = "admin";
+const CUSTOMER_DIRECTORY_STORAGE_KEY = "cash_ledger_customers";
+
+function customerPhoneKey(phone: string) {
+  return phone.replace(/\D/g, "");
+}
+
 const accountColorOptions = [
   {
     id: "mint",
@@ -451,6 +464,13 @@ export default function Home() {
   const [commissionInput, setCommissionInput] = useState("");
   const [customerInput, setCustomerInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
+  const [customerDirectory, setCustomerDirectory] = useState<
+    CustomerDirectoryEntry[]
+  >([]);
+  const [activeCustomerField, setActiveCustomerField] = useState<
+    "name" | "phone" | null
+  >(null);
+  const customerFieldsRef = useRef<HTMLDivElement>(null);
   const [noteInput, setNoteInput] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionKindFilter, setSessionKindFilter] =
@@ -479,6 +499,20 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !customerFieldsRef.current?.contains(event.target)
+      ) {
+        setActiveCustomerField(null);
+      }
+    };
+    document.addEventListener("pointerdown", handleOutsidePointerDown);
+    return () =>
+      document.removeEventListener("pointerdown", handleOutsidePointerDown);
+  }, []);
+
   const persistLedger = useCallback((nextLedger: LedgerData) => {
     const payload = JSON.stringify(nextLedger);
     void persistLedgerRecord(payload);
@@ -495,6 +529,29 @@ export default function Home() {
       } catch (error) {
         console.error("Failed to load locally saved ledger data.", error);
         setMessage("Saved ledger data could not be read on this device.");
+      }
+      try {
+        const savedCustomers = window.localStorage.getItem(
+          CUSTOMER_DIRECTORY_STORAGE_KEY,
+        );
+        if (savedCustomers) {
+          const parsed: unknown = JSON.parse(savedCustomers);
+          if (Array.isArray(parsed)) {
+            setCustomerDirectory(
+              parsed.filter(
+                (customer): customer is CustomerDirectoryEntry =>
+                  customer !== null &&
+                  typeof customer === "object" &&
+                  typeof customer.id === "string" &&
+                  typeof customer.name === "string" &&
+                  typeof customer.phone === "string" &&
+                  typeof customer.lastUsed === "string",
+              ),
+            );
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load the local customer directory.", error);
       }
       setHydrated(true);
     }, 0);
@@ -608,6 +665,23 @@ export default function Home() {
   const transactionAccounts = isOpen
     ? todayActiveAccounts.filter((account) => !account.deletedAt)
     : accounts;
+  const customerNameSuggestions = customerInput.trim()
+    ? customerDirectory
+        .filter((customer) =>
+          customer.name
+            .toLowerCase()
+            .includes(customerInput.trim().toLowerCase()),
+        )
+        .slice(0, 8)
+    : [];
+  const customerPhoneQuery = customerPhoneKey(phoneInput);
+  const customerPhoneSuggestions = customerPhoneQuery
+    ? customerDirectory
+        .filter((customer) =>
+          customerPhoneKey(customer.phone).includes(customerPhoneQuery),
+        )
+        .slice(0, 8)
+    : [];
   const transferAccountError =
     transactionKind === "TRANSFER" && fromAccountId === toAccountId;
   const closingDifference =
@@ -694,6 +768,48 @@ export default function Home() {
   function notify(text: string) {
     setMessage(text);
     window.setTimeout(() => setMessage(""), 3500);
+  }
+
+  function selectCustomer(customer: CustomerDirectoryEntry) {
+    setCustomerInput(customer.name);
+    setPhoneInput(customer.phone);
+    setActiveCustomerField(null);
+  }
+
+  function rememberCustomer(nameValue: string, phoneValue: string) {
+    const name = nameValue.trim();
+    const phone = phoneValue.trim();
+    const phoneKey = customerPhoneKey(phone);
+    if (!name && !phoneKey) return;
+
+    const existing = customerDirectory.find((customer) => {
+      const phoneMatches =
+        phoneKey && customerPhoneKey(customer.phone) === phoneKey;
+      const nameMatches =
+        name && customer.name.trim().toLowerCase() === name.toLowerCase();
+      return Boolean(phoneMatches || nameMatches);
+    });
+    const updatedCustomer: CustomerDirectoryEntry = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name: name || existing?.name || "",
+      phone: phone || existing?.phone || "",
+      lastUsed: new Date().toISOString(),
+    };
+    const updatedDirectory = existing
+      ? customerDirectory.map((customer) =>
+          customer.id === existing.id ? updatedCustomer : customer,
+        )
+      : [updatedCustomer, ...customerDirectory];
+
+    setCustomerDirectory(updatedDirectory);
+    try {
+      window.localStorage.setItem(
+        CUSTOMER_DIRECTORY_STORAGE_KEY,
+        JSON.stringify(updatedDirectory),
+      );
+    } catch (error) {
+      console.error("Failed to save the local customer directory.", error);
+    }
   }
 
   function startOpeningFlow() {
@@ -991,6 +1107,7 @@ export default function Home() {
       notify("Could not save this transaction to local storage.");
       return;
     }
+    rememberCustomer(transaction.customer, transaction.phone);
     setEditingTransactionId(null);
     setAmountInput("");
     setCommissionInput("");
@@ -2115,46 +2232,127 @@ export default function Home() {
                       </span>
                     </label>
                   )}
-                  {transactionKind !== "EXPENSE" && (
-                    <label className="field-label">
-                      {transactionKind === "TRANSFER"
-                        ? "Transfer person"
-                        : "Customer name"}{" "}
-                      <span className="optional-label">Optional</span>
-                      <span className="input-wrap">
-                        <input
-                          autoComplete="name"
-                          placeholder="Name at counter"
-                          value={customerInput}
-                          onChange={(event) =>
-                            updateCustomerNameInput(
-                              event.currentTarget,
-                              setCustomerInput,
-                            )
-                          }
-                        />
-                      </span>
-                    </label>
-                  )}
-                  {transactionKind !== "TRANSFER" &&
-                    transactionKind !== "EXPENSE" && (
-                    <label className="field-label">
-                      Phone number{" "}
-                      <span className="optional-label">Optional</span>
-                      <span className="input-wrap">
-                        <input
-                          autoComplete="tel"
-                          inputMode="tel"
-                          placeholder="09 xxx xxx xxx"
-                          value={phoneInput}
-                          maxLength={14}
-                          onChange={(event) =>
-                            updatePhoneInput(event.currentTarget, setPhoneInput)
-                          }
-                        />
-                      </span>
-                    </label>
+                  <div ref={customerFieldsRef} className="contents">
+                    {transactionKind !== "EXPENSE" && (
+                      <div className="relative min-w-0">
+                        <label className="field-label">
+                          {transactionKind === "TRANSFER"
+                            ? "Transfer person"
+                            : "Customer name"}{" "}
+                          <span className="optional-label">Optional</span>
+                          <span className="input-wrap">
+                            <input
+                              role="combobox"
+                              autoComplete="name"
+                              placeholder="Name at counter"
+                              value={customerInput}
+                              aria-autocomplete="list"
+                              aria-controls="customer-name-suggestions"
+                              aria-haspopup="listbox"
+                              aria-expanded={
+                                activeCustomerField === "name" &&
+                                customerNameSuggestions.length > 0
+                              }
+                              onFocus={() => setActiveCustomerField("name")}
+                              onChange={(event) => {
+                                setActiveCustomerField("name");
+                                updateCustomerNameInput(
+                                  event.currentTarget,
+                                  setCustomerInput,
+                                );
+                              }}
+                            />
+                          </span>
+                        </label>
+                        {activeCustomerField === "name" &&
+                          customerNameSuggestions.length > 0 && (
+                            <div
+                              id="customer-name-suggestions"
+                              role="listbox"
+                              className="absolute left-0 right-0 top-full z-30 mt-1 max-h-48 overflow-y-auto rounded-[8px] border border-[#e1e6e0] bg-white p-1 shadow-[0_10px_28px_rgba(20,36,28,0.14)]"
+                            >
+                              {customerNameSuggestions.map((customer) => (
+                                <button
+                                  key={customer.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected="false"
+                                  onClick={() => selectCustomer(customer)}
+                                  className="flex w-full items-center justify-between gap-3 rounded-[6px] px-2.5 py-2 text-left text-[10px] text-[#34443b] transition hover:bg-[#f2f6ef]"
+                                >
+                                  <span className="min-w-0 truncate font-medium">
+                                    {customer.name || "No name saved"}
+                                  </span>
+                                  <span className="shrink-0 text-[9px] text-[#7d8980]">
+                                    {customer.phone || "No phone saved"}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                      </div>
                     )}
+                    {transactionKind !== "TRANSFER" &&
+                      transactionKind !== "EXPENSE" && (
+                        <div className="relative min-w-0">
+                          <label className="field-label">
+                            Phone number{" "}
+                            <span className="optional-label">Optional</span>
+                            <span className="input-wrap">
+                              <input
+                                role="combobox"
+                                autoComplete="tel"
+                                inputMode="tel"
+                                placeholder="09 xxx xxx xxx"
+                                value={phoneInput}
+                                maxLength={14}
+                                aria-autocomplete="list"
+                                aria-controls="customer-phone-suggestions"
+                                aria-haspopup="listbox"
+                                aria-expanded={
+                                  activeCustomerField === "phone" &&
+                                  customerPhoneSuggestions.length > 0
+                                }
+                                onFocus={() => setActiveCustomerField("phone")}
+                                onChange={(event) => {
+                                  setActiveCustomerField("phone");
+                                  updatePhoneInput(
+                                    event.currentTarget,
+                                    setPhoneInput,
+                                  );
+                                }}
+                              />
+                            </span>
+                          </label>
+                          {activeCustomerField === "phone" &&
+                            customerPhoneSuggestions.length > 0 && (
+                              <div
+                                id="customer-phone-suggestions"
+                                role="listbox"
+                                className="absolute left-0 right-0 top-full z-30 mt-1 max-h-48 overflow-y-auto rounded-[8px] border border-[#e1e6e0] bg-white p-1 shadow-[0_10px_28px_rgba(20,36,28,0.14)]"
+                              >
+                                {customerPhoneSuggestions.map((customer) => (
+                                  <button
+                                    key={customer.id}
+                                    type="button"
+                                    role="option"
+                                    aria-selected="false"
+                                    onClick={() => selectCustomer(customer)}
+                                    className="flex w-full items-center justify-between gap-3 rounded-[6px] px-2.5 py-2 text-left text-[10px] text-[#34443b] transition hover:bg-[#f2f6ef]"
+                                  >
+                                    <span className="min-w-0 truncate font-medium">
+                                      {customer.name || "No name saved"}
+                                    </span>
+                                    <span className="shrink-0 text-[9px] text-[#7d8980]">
+                                      {customer.phone || "No phone saved"}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                  </div>
                   <label className="field-label sm:col-span-2">
                     Note <span className="optional-label">Optional</span>
                     <span className="input-wrap">
