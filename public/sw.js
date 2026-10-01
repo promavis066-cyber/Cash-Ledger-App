@@ -1,14 +1,5 @@
-const CACHE_NAME = "cash-ledger-shell-v3";
-const APP_SHELL = [
-  "/",
-  "/manifest.json",
-  "/icon.svg",
-  "/ocr/worker.min.js",
-  "/ocr/tesseract-core-simd-lstm.wasm.js",
-  "/ocr/tesseract-core-simd-lstm.wasm",
-  "/ocr/eng.traineddata.gz",
-  "/ocr/mya.traineddata.gz",
-];
+const CACHE_NAME = "cash-ledger-shell-v4";
+const APP_SHELL = ["/", "/manifest.json", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

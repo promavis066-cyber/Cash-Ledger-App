@@ -21,7 +21,6 @@ import {
   ReceiptText,
   RotateCcw,
   Search,
-  ScanLine,
   Trash2,
   TrendingUp,
   WalletCards,
@@ -35,7 +34,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import {
@@ -59,13 +57,6 @@ type AppTab =
   "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
-type ReceiptTransactionKind = Extract<TransactionKind, "CASH_IN" | "CASH_OUT">;
-type ParsedReceipt = {
-  amount?: string;
-  customer?: string;
-  kind: ReceiptTransactionKind;
-  accountId?: AccountId;
-};
 
 const ADMIN_PASSWORD = "admin";
 const accountColorOptions = [
@@ -292,108 +283,6 @@ function formatCustomerName(value: string) {
   return value.replace(/[^A-Za-z ]/g, "").toUpperCase();
 }
 
-function getRawCustomerName(ocrText: string) {
-  if (!ocrText) return "";
-
-  const lines = ocrText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(
-      /(?:Transfer\s+To|Transfer\s+From)[:\s]*(.*)/i,
-    );
-    if (!match) continue;
-
-    let rawText = match[1]?.trim() ?? "";
-    if (!rawText && index + 1 < lines.length) {
-      rawText = lines[index + 1].trim();
-    }
-
-    if (rawText) return rawText.toUpperCase();
-  }
-
-  return "";
-}
-
-function normalizeMyanmarReceiptText(value: string) {
-  return value
-    .normalize("NFC")
-    .replace(/[\s\u200b-\u200f\ufeff]/g, "")
-    .replace(/[\u102b-\u103e]/g, "");
-}
-
-function extractReceiptFields(
-  text: string,
-  accounts: AccountDefinition[],
-): ParsedReceipt {
-  const normalizedText = text.replace(/[−–—]/g, "-");
-  const amountMatch = [
-    /(?:transaction\s+)?(?:amount|total)\s*[:：]?\s*(?:(?:mmk|ks)\s*)?([+-]?)\s*(\d[\d,]*)(?:\.\d+)?/i,
-    /\b(?:mmk|ks)\s*([+-]?)\s*(\d[\d,]*)(?:\.\d+)?/i,
-    /([+-]?)\s*(\d[\d,]*)(?:\.\d+)?\s*(?:mmk|ks)\b/i,
-    /([+-])\s*(\d[\d,]*)(?:\.\d+)?/i,
-  ]
-    .map((pattern) => normalizedText.match(pattern))
-    .find((match) => match !== null);
-  const amountDigits = amountMatch?.[2]?.replace(/\D/g, "");
-  const amountValue = amountDigits ? Number(amountDigits) : undefined;
-  const amountSign = amountMatch?.[1];
-  const customer = getRawCustomerName(text);
-
-  const normalizedAccountText = normalizedText
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ");
-  const account = accounts.find((candidate) => {
-    if (candidate.id === "cash-drawer") return false;
-    const aliases = [
-      candidate.name,
-      candidate.shortName,
-      ...(candidate.id === "wavemoney" ? ["WavePay"] : []),
-      ...(candidate.id === "kbzpay" ? ["KBZPay"] : []),
-    ];
-    return aliases.some((alias) => {
-      const normalizedAlias = alias
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, " ")
-        .trim();
-      return normalizedAlias && normalizedAccountText.includes(normalizedAlias);
-    });
-  });
-  const normalizedMyanmarText = normalizeMyanmarReceiptText(text);
-  const myanmarCredit = ["ငွေလက်ခံရရှိသည်", "ငွေလွှဲဝင်လာခြင်း"].some(
-    (phrase) =>
-      normalizedMyanmarText.includes(normalizeMyanmarReceiptText(phrase)),
-  );
-  const myanmarDebit = ["ငွေလွှဲပေးပို့သည်", "ငွေထုတ်ပေးသည်"].some(
-    (phrase) =>
-      normalizedMyanmarText.includes(normalizeMyanmarReceiptText(phrase)),
-  );
-  const kind: ReceiptTransactionKind = myanmarCredit
-    ? "CASH_OUT"
-    : myanmarDebit
-      ? "CASH_IN"
-      : amountSign === "+"
-        ? "CASH_OUT"
-        : amountSign === "-"
-          ? "CASH_IN"
-          : /\b(?:credit(?:ed)?|cash\s*out|withdraw(?:al)?)\b/i.test(text)
-            ? "CASH_OUT"
-            : /\b(?:debit(?:ed)?|cash\s*in|deposit)\b/i.test(text)
-              ? "CASH_IN"
-              : "CASH_IN";
-
-  return {
-    amount:
-      amountValue !== undefined && Number.isSafeInteger(amountValue)
-        ? formatCurrencyInputValue(String(amountValue))
-        : undefined,
-    customer,
-    kind,
-    accountId: account?.id,
-  };
-}
-
 function updateCustomerNameInput(
   input: HTMLInputElement,
   setValue: (value: string) => void,
@@ -572,9 +461,6 @@ export default function Home() {
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
   const [isOnline, setIsOnline] = useState(true);
-  const [isScanningReceipt, setIsScanningReceipt] = useState(false);
-  const [receiptScanProgress, setReceiptScanProgress] = useState(0);
-  const receiptImageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -722,92 +608,6 @@ export default function Home() {
   const transactionAccounts = isOpen
     ? todayActiveAccounts.filter((account) => !account.deletedAt)
     : accounts;
-  const scanReceiptImage = useCallback(
-    async (image: Blob) => {
-      let imageData: Blob | null = image;
-      let worker: Awaited<
-        ReturnType<typeof import("tesseract.js").createWorker>
-      > | null = null;
-      setIsScanningReceipt(true);
-      setReceiptScanProgress(0);
-
-      try {
-        const { createWorker } = await import("tesseract.js");
-        worker = await createWorker(["eng", "mya"], 1, {
-          workerPath: "/ocr/worker.min.js",
-          corePath: "/ocr/tesseract-core-simd-lstm.wasm.js",
-          langPath: "/ocr",
-          gzip: true,
-          logger: ({ status, progress }) => {
-            if (status === "recognizing text") {
-              setReceiptScanProgress(Math.round(progress * 100));
-            }
-          },
-        });
-        const {
-          data: { text },
-        } = await worker.recognize(imageData);
-        imageData = null;
-
-        const fields = extractReceiptFields(text, accounts);
-        const populatedFields = [
-          fields.amount,
-          fields.customer,
-          fields.accountId,
-        ].filter(Boolean).length;
-        setActiveTab("transactions");
-        setTransactionKind(fields.kind);
-        setCommissionInput("");
-        setAmountInput(fields.amount ?? "");
-        setCustomerInput(fields.customer ?? "");
-        setPhoneInput("");
-        if (fields.accountId) {
-          setServiceAccountId(fields.accountId);
-        }
-        notify(
-          populatedFields
-            ? "Receipt scanned. Review the extracted details before saving."
-            : "No receipt details were recognized. Try a clearer image.",
-        );
-        window.requestAnimationFrame(() => {
-          document
-            .getElementById("transaction-entry")
-            ?.scrollIntoView({ behavior: "smooth", block: "center" });
-          document.getElementById("transaction-amount-input")?.focus();
-        });
-      } catch (error) {
-        console.error("Receipt OCR failed.", error);
-        notify("Receipt scan failed. Please try another image.");
-      } finally {
-        imageData = null;
-        if (worker) {
-          try {
-            await worker.terminate();
-          } catch (error) {
-            console.error("Could not terminate the receipt OCR worker.", error);
-          }
-        }
-        setIsScanningReceipt(false);
-      }
-    },
-    [accounts],
-  );
-
-  useEffect(() => {
-    const handlePaste = (event: ClipboardEvent) => {
-      const imageItem = Array.from(event.clipboardData?.items ?? []).find(
-        (item) => item.kind === "file" && item.type.startsWith("image/"),
-      );
-      const image = imageItem?.getAsFile();
-      if (!image) return;
-      event.preventDefault();
-      void scanReceiptImage(image);
-    };
-
-    window.addEventListener("paste", handlePaste);
-    return () => window.removeEventListener("paste", handlePaste);
-  }, [scanReceiptImage]);
-
   const transferAccountError =
     transactionKind === "TRANSFER" && fromAccountId === toAccountId;
   const closingDifference =
@@ -2080,37 +1880,6 @@ export default function Home() {
                     Capture a counter movement in a few seconds
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-                  <input
-                    ref={receiptImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    aria-label="Choose receipt image"
-                    onChange={(event) => {
-                      const image = event.currentTarget.files?.[0];
-                      event.currentTarget.value = "";
-                      if (image) void scanReceiptImage(image);
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={isScanningReceipt}
-                    onClick={() => receiptImageInputRef.current?.click()}
-                    className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce5d9] bg-white px-3 text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef] disabled:cursor-wait disabled:opacity-60"
-                  >
-                    <ScanLine size={13} />
-                    {isScanningReceipt ? "Scanning..." : "Scan Slip"}
-                  </button>
-                  {isScanningReceipt && (
-                    <span
-                      role="status"
-                      className="text-[9px] font-medium text-[#71816f]"
-                    >
-                      Scanning receipt... {receiptScanProgress}%
-                    </span>
-                  )}
-                </div>
                 {!isOpen && (
                   <span className="flex items-center gap-1.5 self-start text-[10px] text-[#ac7954]">
                     <CircleAlert size={13} />
@@ -2281,7 +2050,6 @@ export default function Home() {
                     Amount · MMK
                     <span className="input-wrap">
                       <input
-                        id="transaction-amount-input"
                         required
                         inputMode="decimal"
                         type="text"
