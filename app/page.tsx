@@ -292,12 +292,77 @@ function formatCustomerName(value: string) {
   return value.replace(/[^A-Za-z ]/g, "").toUpperCase();
 }
 
-function formatReceiptCustomerName(value: string) {
-  return value
-    .replace(/[^\p{L}\p{M} ]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+function extractCustomerNameFromOCR(ocrText: string) {
+  if (!ocrText) return "";
+
+  const lines = ocrText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const targetLines: string[] = [];
+  const stopKeywords = [
+    "amount",
+    "service fee",
+    "commission",
+    "total amount",
+    "notes",
+    "mmqr",
+    "mobile wallet",
+    "payment",
+    "save e-receipt",
+    "transaction id",
+    "status",
+    "date",
+    "time",
+    "successful",
+  ];
+  const headerPattern =
+    /^(?:transfer\s+to|transfer\s+from|transferred\s+to|transferred\s+from|received\s+from|to|from|receiver|sender)\b\s*[:：\-]?\s*(.*)$/i;
+  let capturing = false;
+
+  for (const line of lines) {
+    const header = line.match(headerPattern);
+    if (header) {
+      if (capturing) break;
+      capturing = true;
+      const remainder = header[1].trim();
+      if (remainder) targetLines.push(remainder);
+      if (targetLines.length >= 2) break;
+      continue;
+    }
+
+    if (!capturing) continue;
+    const lower = line.toLowerCase();
+    if (stopKeywords.some((keyword) => lower.startsWith(keyword))) break;
+    targetLines.push(line);
+    if (targetLines.length >= 2) break;
+  }
+
+  if (targetLines.length === 0) return "";
+
+  let combined = targetLines.join(" ");
+  combined = combined.replace(/\([^)]*\)/g, " ");
+  combined = combined.replace(/^\s*\d+[\s\-_:]*/, " ");
+  combined = combined.replace(/[\d*\-_:;()]+/g, " ");
+
+  const words = combined.match(/[A-Za-z]+/g);
+  if (!words) return "";
+
+  const blacklistedWords = new Set([
+    "KS",
+    "MMK",
+    "CASH",
+    "IN",
+    "OUT",
+    "DETAILS",
+    "PAYMENT",
+    "SUCCESSFUL",
+  ]);
+  return words
+    .filter((word) => !blacklistedWords.has(word.toUpperCase()))
+    .join(" ")
+    .toUpperCase()
+    .trim();
 }
 
 function normalizeMyanmarReceiptText(value: string) {
@@ -323,92 +388,7 @@ function extractReceiptFields(
   const amountDigits = amountMatch?.[2]?.replace(/\D/g, "");
   const amountValue = amountDigits ? Number(amountDigits) : undefined;
   const amountSign = amountMatch?.[1];
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  let customer: string | undefined;
-  const normalizeAccountName = (value: string) =>
-    value.replace(/[^a-z0-9]/gi, "").toLowerCase();
-  const accountNames = accounts.flatMap((account) => [
-    account.name,
-    account.shortName,
-    ...(account.id === "wavemoney" ? ["WavePay"] : []),
-    ...(account.id === "kbzpay" ? ["KBZPay"] : []),
-  ]);
-  const noisyNameLine = (candidate: string) => {
-    const normalized = candidate.trim();
-    return (
-      !normalized ||
-      /^(?:transaction\s*(?:id|no\.?|number)|reference|receipt|status|date|time|amount|total|balance|successful|success|completed|pending|failed)\b/i.test(
-        normalized,
-      ) ||
-      /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(
-        normalized,
-      ) ||
-      /^\d{1,2}[:.]\d{2}(?:\s*[ap]m)?$/i.test(normalized) ||
-      /^\d{1,4}[/-]\d{1,2}(?:[/-]\d{2,4})?$/.test(normalized) ||
-      /(?:အောင်မြင်သည်|transaction\s*id|receipt\s*(?:no|number))/i.test(
-        normalized,
-      ) ||
-      /(?:\+?959|09)(?:[\s()-]*\d){7,9}/.test(normalized) ||
-      /^\+?[\d\s.,:/()-]+$/.test(normalized) ||
-      accountNames.some(
-        (accountName) =>
-          normalizeAccountName(accountName) ===
-          normalizeAccountName(normalized),
-      )
-    );
-  };
-  const cleanName = (candidate: string) => {
-    const nameCandidate = candidate
-      .replace(/\([^)]*\)/g, " ")
-      .replace(/\b(?:phone|mobile|contact|transaction\s*id|reference|date|time)\b.*$/i, " ")
-      .trim();
-    if (noisyNameLine(nameCandidate)) return undefined;
-    const cleaned = formatReceiptCustomerName(
-      nameCandidate
-        .replace(/\b(?:successful|success|completed|pending|failed|status|transaction\s*id|reference)\b/gi, " ")
-        .replace(/(?:အောင်မြင်သည်|transaction\s*id|receipt\s*(?:no|number)).*/i, " ")
-        .replace(/[0-9]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim(),
-    );
-    const words = cleaned.split(/\s+/).filter(Boolean);
-    return words.length >= 2 || (words.length === 1 && words[0].length >= 3)
-      ? cleaned
-      : undefined;
-  };
-  const nameLabel =
-    /(?:transfer\s+to|transfer\s+from|received\s+from|receiver(?:\s+name)?|sender(?:\s+name)?|to|from)\s*[:：\-]?\s*([A-Za-z\s]*?)(?=\s*\(|[\r\n]|$)/i;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const nameLine = lines[index].match(nameLabel);
-    if (!nameLine) continue;
-    for (const candidate of [
-      nameLine[1],
-      lines[index + 1] ?? "",
-      lines[index + 2] ?? "",
-    ]) {
-      customer = cleanName(candidate);
-      if (customer) break;
-    }
-    if (customer) break;
-  }
-
-  if (!customer) {
-    const anchorIndexes = lines.flatMap((line, index) =>
-      /successful|success|completed|pending/i.test(line)
-        ? [index]
-        : [],
-    );
-    for (const anchorIndex of anchorIndexes) {
-      customer =
-        cleanName(lines[anchorIndex - 1] ?? "") ??
-        cleanName(lines[anchorIndex + 1] ?? "");
-      if (customer) break;
-    }
-  }
+  const customer = extractCustomerNameFromOCR(text);
 
   const normalizedAccountText = normalizedText
     .toLowerCase()
