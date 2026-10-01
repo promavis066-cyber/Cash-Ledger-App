@@ -944,7 +944,7 @@ export default function Home() {
             outflow: rows.reduce((sum, row) => sum + row.outflow, 0),
             commission: rows.reduce((sum, row) => sum + row.commission, 0),
             net: rows.reduce((sum, row) => sum + row.inflow - row.outflow, 0),
-            closing: rows.at(-1)?.systemClosing ?? 0,
+            closing: rows[rows.length - 1]?.systemClosing ?? 0,
           };
         }),
     [ledger.accounts, reportAccountIds, reportDailyRows],
