@@ -2085,7 +2085,6 @@ export default function Home() {
                     ref={receiptImageInputRef}
                     type="file"
                     accept="image/*"
-                    capture="environment"
                     className="hidden"
                     aria-label="Choose receipt image"
                     onChange={(event) => {
