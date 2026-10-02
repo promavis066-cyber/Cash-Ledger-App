@@ -208,24 +208,20 @@ async function synchronizeTable(
     existingRecords.map((record) => [record.id, record]),
   );
   const desiredById = new Map(records.map((record) => [record.id, record]));
-
-  const inserts: Array<{ id: string; user_id: string; data: unknown }> = [];
-  for (const record of records) {
+  const upserts: Array<{ id: string; user_id: string; data: unknown }> = [];
+  for (const record of desiredById.values()) {
     const existing = existingById.get(record.id);
     if (!existing) {
-      inserts.push({ ...record, user_id: userId });
+      upserts.push({ ...record, user_id: userId });
     } else if (JSON.stringify(existing.data) !== JSON.stringify(record.data)) {
-      const result = await supabase
-        .from(table)
-        .update({ data: record.data })
-        .eq("user_id", userId)
-        .eq("id", record.id);
-      throwOnError(result.error);
+      upserts.push({ ...record, user_id: userId });
     }
   }
 
-  if (inserts.length) {
-    const result = await supabase.from(table).insert(inserts);
+  if (upserts.length) {
+    const result = await supabase.from(table).upsert(upserts, {
+      onConflict: "user_id,id",
+    });
     throwOnError(result.error);
   }
 
@@ -271,19 +267,23 @@ async function synchronizeCustomers(
     existingRecords.map((record) => [record.id, record]),
   );
   const desiredById = new Map(customers.map((customer) => [customer.id, customer]));
+  const upserts: Array<{
+    id: string;
+    user_id: string;
+    data: CustomerDirectoryEntry;
+    is_favorite?: boolean;
+  }> = [];
 
-  for (const customer of customers) {
+  for (const customer of desiredById.values()) {
     const stored = { ...customer };
     const current = existingById.get(customer.id);
     if (!current) {
-      const row = {
+      upserts.push({
         id: customer.id,
         user_id: userId,
         data: stored,
         ...(hasFavoriteColumn ? { is_favorite: customer.is_favorite } : {}),
-      };
-      const result = await supabase.from("customers").insert(row);
-      throwOnError(result.error);
+      });
     } else {
       const columnDiffers =
         hasFavoriteColumn && current.is_favorite !== customer.is_favorite;
@@ -291,19 +291,23 @@ async function synchronizeCustomers(
         JSON.stringify(current.data) !== JSON.stringify(stored) ||
         columnDiffers
       ) {
-        const result = await supabase
-          .from("customers")
-          .update({
-            data: stored,
-            ...(hasFavoriteColumn
-              ? { is_favorite: customer.is_favorite }
-              : {}),
-          })
-          .eq("user_id", userId)
-          .eq("id", customer.id);
-        throwOnError(result.error);
+        upserts.push({
+          id: customer.id,
+          user_id: userId,
+          data: stored,
+          ...(hasFavoriteColumn
+            ? { is_favorite: customer.is_favorite }
+            : {}),
+        });
       }
     }
+  }
+
+  if (upserts.length) {
+    const result = await supabase.from("customers").upsert(upserts, {
+      onConflict: "user_id,id",
+    });
+    throwOnError(result.error);
   }
 
   const removedIds = existingRecords

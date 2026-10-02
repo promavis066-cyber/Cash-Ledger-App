@@ -1538,7 +1538,7 @@ function LedgerDashboard({
       ? ledger.transactions.find((item) => item.id === editingTransactionId)
       : undefined;
     const transaction: LedgerTransaction = {
-      id: crypto.randomUUID(),
+      id: existingTransaction?.id ?? crypto.randomUUID(),
       date: activeDate,
       time:
         existingTransaction?.time ??
