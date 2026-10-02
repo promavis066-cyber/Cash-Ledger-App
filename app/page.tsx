@@ -22,8 +22,10 @@ import {
   ReceiptText,
   RotateCcw,
   Search,
+  Star,
   Trash2,
   TrendingUp,
+  Users,
   WalletCards,
   X,
 } from "lucide-react";
@@ -52,21 +54,33 @@ import {
   AccountKind,
 } from "@/lib/ledger";
 import {
+  loadCustomerAnalyticsTransactions,
   loadLedgerSnapshot,
   saveLedgerSnapshot,
+  type CustomerAnalyticsTransaction,
   type CustomerDirectoryEntry,
 } from "@/lib/ledgerDatabase";
 import { supabase } from "@/lib/supabase";
 
 type ModalKind = "open" | "close" | "accounts" | "admin" | null;
 type AppTab =
-  "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
+  | "overview"
+  | "wallet"
+  | "transactions"
+  | "reconciliation"
+  | "customers"
+  | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
+type CustomerReportRange = "today" | "month" | "all" | "custom";
 const ADMIN_PASSWORD = "admin";
 
 function customerPhoneKey(phone: string) {
   return phone.replace(/\D/g, "");
+}
+
+function customerPairKey(name: string, phone: string) {
+  return `${name.trim().toLocaleLowerCase()}|${customerPhoneKey(phone)}`;
 }
 
 const accountColorOptions = [
@@ -617,6 +631,21 @@ function LedgerDashboard({
   const [customerDirectory, setCustomerDirectory] = useState<
     CustomerDirectoryEntry[]
   >([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [editingCustomerId, setEditingCustomerId] = useState<string | null>(
+    null,
+  );
+  const [customerEditName, setCustomerEditName] = useState("");
+  const [customerEditPhone, setCustomerEditPhone] = useState("");
+  const [customerReportRange, setCustomerReportRange] =
+    useState<CustomerReportRange>("today");
+  const [customerReportFrom, setCustomerReportFrom] = useState(today);
+  const [customerReportTo, setCustomerReportTo] = useState(today);
+  const [cloudCustomerAnalytics, setCloudCustomerAnalytics] = useState<{
+    key: string;
+    rows: CustomerAnalyticsTransaction[];
+  } | null>(null);
   const [activeCustomerField, setActiveCustomerField] = useState<
     "name" | "phone" | null
   >(null);
@@ -838,7 +867,6 @@ function LedgerDashboard({
             .toLowerCase()
             .includes(customerInput.trim().toLowerCase()),
         )
-        .slice(0, 8)
     : [];
   const customerPhoneQuery = customerPhoneKey(phoneInput);
   const customerPhoneSuggestions = customerPhoneQuery
@@ -846,7 +874,6 @@ function LedgerDashboard({
         .filter((customer) =>
           customerPhoneKey(customer.phone).includes(customerPhoneQuery),
         )
-        .slice(0, 8)
     : [];
   const transferAccountError =
     transactionKind === "TRANSFER" && fromAccountId === toAccountId;
@@ -930,6 +957,151 @@ function LedgerDashboard({
     (total, transaction) => total + transaction.commission,
     0,
   );
+  const customerAnalyticsRange = useMemo(() => {
+    const startDate =
+      customerReportRange === "today"
+        ? today
+        : customerReportRange === "month"
+          ? `${today.slice(0, 7)}-01`
+          : customerReportRange === "custom"
+            ? customerReportFrom
+            : undefined;
+    const endDate =
+      customerReportRange === "today"
+        ? today
+        : customerReportRange === "month"
+          ? today
+          : customerReportRange === "custom"
+            ? customerReportTo
+            : undefined;
+    return {
+      key: `${customerReportRange}:${startDate ?? ""}:${endDate ?? ""}`,
+      startDate,
+      endDate,
+    };
+  }, [customerReportFrom, customerReportRange, customerReportTo, today]);
+  useEffect(() => {
+    if (activeTab !== "reports") return;
+    let cancelled = false;
+    void loadCustomerAnalyticsTransactions(
+      user,
+      customerAnalyticsRange.startDate,
+      customerAnalyticsRange.endDate,
+    )
+      .then((rows) => {
+        if (!cancelled) {
+          setCloudCustomerAnalytics({
+            key: customerAnalyticsRange.key,
+            rows,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.error("Could not query customer analytics from Supabase.", error);
+        setCloudCustomerAnalytics(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, customerAnalyticsRange, user]);
+  const customerAnalyticsTransactions = useMemo(() => {
+    if (cloudCustomerAnalytics?.key === customerAnalyticsRange.key)
+      return cloudCustomerAnalytics.rows;
+    return ledger.transactions.filter(
+      (transaction) =>
+        (!customerAnalyticsRange.startDate ||
+          transaction.date >= customerAnalyticsRange.startDate) &&
+        (!customerAnalyticsRange.endDate ||
+          transaction.date <= customerAnalyticsRange.endDate),
+    );
+  }, [
+    cloudCustomerAnalytics,
+    customerAnalyticsRange,
+    ledger.transactions,
+  ]);
+  const customerRankings = useMemo(() => {
+    const byPair = new Map<
+      string,
+      {
+        name: string;
+        phone: string;
+        count: number;
+        cashIn: number;
+        cashOut: number;
+        commission: number;
+      }
+    >();
+    for (const transaction of customerAnalyticsTransactions) {
+      const name = transaction.customer.trim();
+      const phone = transaction.phone.trim();
+      if (!name && !phone) continue;
+      const key = customerPairKey(name, phone);
+      const ranking = byPair.get(key) ?? {
+        name: name || "Unnamed customer",
+        phone,
+        count: 0,
+        cashIn: 0,
+        cashOut: 0,
+        commission: 0,
+      };
+      ranking.count += 1;
+      if (transaction.kind === "CASH_IN") ranking.cashIn += transaction.amount;
+      if (transaction.kind === "CASH_OUT")
+        ranking.cashOut += transaction.amount;
+      ranking.commission += transaction.commission;
+      byPair.set(key, ranking);
+    }
+    const all = Array.from(byPair.values());
+    return {
+      frequent: [...all].sort((a, b) => b.count - a.count),
+      cashIn: [...all]
+        .filter((item) => item.cashIn > 0)
+        .sort((a, b) => b.cashIn - a.cashIn),
+      cashOut: [...all]
+        .filter((item) => item.cashOut > 0)
+        .sort((a, b) => b.cashOut - a.cashOut),
+      commission: [...all]
+        .filter((item) => item.commission > 0)
+        .sort((a, b) => b.commission - a.commission),
+    };
+  }, [customerAnalyticsTransactions]);
+  const customerDirectoryRows = useMemo(() => {
+    const stats = new Map<
+      string,
+      { count: number; lastActive: string | null }
+    >();
+    for (const transaction of ledger.transactions) {
+      const key = customerPairKey(transaction.customer, transaction.phone);
+      if (key === "|") continue;
+      const existing = stats.get(key) ?? { count: 0, lastActive: null };
+      existing.count += 1;
+      if (!existing.lastActive || transaction.date > existing.lastActive)
+        existing.lastActive = transaction.date;
+      stats.set(key, existing);
+    }
+    const query = customerSearch.trim().toLocaleLowerCase();
+    return customerDirectory
+      .filter(
+        (customer) =>
+          (!favoritesOnly || customer.is_favorite) &&
+          (!query ||
+            customer.name.toLocaleLowerCase().includes(query) ||
+            customer.phone.toLocaleLowerCase().includes(query)),
+      )
+      .map((customer) => ({
+        ...customer,
+        stats: stats.get(customerPairKey(customer.name, customer.phone)) ?? {
+          count: 0,
+          lastActive: null,
+        },
+      }))
+      .sort(
+        (left, right) =>
+          Number(right.is_favorite) - Number(left.is_favorite) ||
+          left.name.localeCompare(right.name),
+      );
+  }, [customerDirectory, customerSearch, favoritesOnly, ledger.transactions]);
 
   function notify(text: string) {
     setMessage(text);
@@ -958,18 +1130,16 @@ function LedgerDashboard({
     const phoneKey = customerPhoneKey(phone);
     if (!name && !phoneKey) return;
 
-    const existing = customerDirectory.find((customer) => {
-      const phoneMatches =
-        phoneKey && customerPhoneKey(customer.phone) === phoneKey;
-      const nameMatches =
-        name && customer.name.trim().toLowerCase() === name.toLowerCase();
-      return Boolean(phoneMatches || nameMatches);
-    });
+    const pairKey = customerPairKey(name, phone);
+    const existing = customerDirectory.find(
+      (customer) => customerPairKey(customer.name, customer.phone) === pairKey,
+    );
     const updatedCustomer: CustomerDirectoryEntry = {
       id: existing?.id ?? crypto.randomUUID(),
-      name: name || existing?.name || "",
-      phone: phone || existing?.phone || "",
+      name,
+      phone,
       lastUsed: new Date().toISOString(),
+      is_favorite: existing?.is_favorite ?? false,
     };
     const updatedDirectory = existing
       ? customerDirectory.map((customer) =>
@@ -978,6 +1148,127 @@ function LedgerDashboard({
       : [updatedCustomer, ...customerDirectory];
 
     setCustomerDirectory(updatedDirectory);
+  }
+
+  function toggleCustomerFavorite(customerId: string) {
+    setCustomerDirectory((current) =>
+      current.map((customer) =>
+        customer.id === customerId
+          ? { ...customer, is_favorite: !customer.is_favorite }
+          : customer,
+      ),
+    );
+  }
+
+  function beginCustomerEdit(customer: CustomerDirectoryEntry) {
+    setEditingCustomerId(customer.id);
+    setCustomerEditName(customer.name);
+    setCustomerEditPhone(customer.phone);
+  }
+
+  function cancelCustomerEdit() {
+    setEditingCustomerId(null);
+    setCustomerEditName("");
+    setCustomerEditPhone("");
+  }
+
+  function saveCustomerEdit(customerId: string) {
+    const name = customerEditName.trim();
+    const phone = customerEditPhone.trim();
+    if (!name && !phone) {
+      notify("Enter a customer name or phone number.");
+      return;
+    }
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
+    const customer = customerDirectory.find((item) => item.id === customerId);
+    if (!customer) return;
+    const now = new Date().toISOString();
+    setCustomerDirectory((current) =>
+      current.map((item) =>
+        item.id === customerId ? { ...item, name, phone, lastUsed: now } : item,
+      ),
+    );
+    setLedger((current) => ({
+      ...current,
+      transactions: current.transactions.map((transaction) =>
+        customerPairKey(transaction.customer, transaction.phone) ===
+        customerPairKey(customer.name, customer.phone)
+          ? { ...transaction, customer: name, phone }
+          : transaction,
+      ),
+    }));
+    cancelCustomerEdit();
+    notify("Customer updated; syncing changes to your cloud ledger.");
+  }
+
+  function deleteCustomer(customer: CustomerDirectoryEntry) {
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete ${customer.name || customer.phone || "this customer"} from the record book? Existing transactions will be kept.`,
+      )
+    )
+      return;
+    setCustomerDirectory((current) =>
+      current.filter((item) => item.id !== customer.id),
+    );
+    if (editingCustomerId === customer.id) cancelCustomerEdit();
+    notify("Customer removed from the record book.");
+  }
+
+  function exportCustomerRankings() {
+    const rows = [
+      ["Ranking", "Name", "Phone Number", "Metric", "Value"],
+      ...(
+        [
+          ["Most Frequent", customerRankings.frequent, "Transactions", "count"],
+          ["Top Cash-In", customerRankings.cashIn, "Cash-In MMK", "cashIn"],
+          ["Top Cash-Out", customerRankings.cashOut, "Cash-Out MMK", "cashOut"],
+          [
+            "Top Commission",
+            customerRankings.commission,
+            "Commission MMK",
+            "commission",
+          ],
+        ] as const
+      ).flatMap(([label, customers, metric, key]) =>
+        customers.map((customer) => [
+          label,
+          customer.name,
+          customer.phone,
+          metric,
+          customer[key],
+        ]),
+      ),
+    ];
+    const csv = rows
+      .map((row) =>
+        row
+          .map((value) => {
+            const text = String(value);
+            const safe = /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
+            return `"${safe.replace(/"/g, '""')}"`;
+          })
+          .join(","),
+      )
+      .join("\r\n");
+    const blob = new Blob([`\uFEFF${csv}`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `customer-rankings-${customerReportRange}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function startOpeningFlow() {
@@ -2531,9 +2822,7 @@ function LedgerDashboard({
                                   className="flex w-full items-center justify-between gap-3 rounded-[6px] px-2.5 py-2 text-left text-[10px] text-[#34443b] transition hover:bg-[#f2f6ef]"
                                 >
                                   <span className="min-w-0 truncate font-medium">
-                                    {customer.name || "No name saved"}
-                                  </span>
-                                  <span className="shrink-0 text-[9px] text-[#7d8980]">
+                                    {customer.name || "No name saved"} —{" "}
                                     {customer.phone || "No phone saved"}
                                   </span>
                                 </button>
@@ -2591,9 +2880,7 @@ function LedgerDashboard({
                                     className="flex w-full items-center justify-between gap-3 rounded-[6px] px-2.5 py-2 text-left text-[10px] text-[#34443b] transition hover:bg-[#f2f6ef]"
                                   >
                                     <span className="min-w-0 truncate font-medium">
-                                      {customer.name || "No name saved"}
-                                    </span>
-                                    <span className="shrink-0 text-[9px] text-[#7d8980]">
+                                      {customer.name || "No name saved"} —{" "}
                                       {customer.phone || "No phone saved"}
                                     </span>
                                   </button>
@@ -3015,8 +3302,366 @@ function LedgerDashboard({
             </section>
           )}
 
+          {activeTab === "customers" && (
+            <section id="customers" className="scroll-mt-24">
+              <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+                <div>
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[1.4px] text-[#829087]">
+                    Contacts
+                  </p>
+                  <h2 className="m-0 text-lg font-semibold text-[#17251f]">
+                    Customer Record Book
+                  </h2>
+                  <p className="mb-0 mt-1 text-[10px] text-[#89948c]">
+                    Manage saved name and phone combinations. Favorites stay
+                    pinned at the top.
+                  </p>
+                </div>
+                <div className="flex w-full gap-2 sm:w-auto">
+                  <label className="input-wrap h-9 flex-1 sm:w-[260px]">
+                    <Search className="ml-2.5 shrink-0 text-[#96a198]" size={14} />
+                    <input
+                      aria-label="Search customers"
+                      type="search"
+                      value={customerSearch}
+                      onChange={(event) => setCustomerSearch(event.target.value)}
+                      placeholder="Search name or phone"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    aria-pressed={favoritesOnly}
+                    onClick={() => setFavoritesOnly((value) => !value)}
+                    className={`flex h-9 shrink-0 items-center gap-1.5 rounded-[7px] border px-3 text-[10px] font-semibold transition ${
+                      favoritesOnly
+                        ? "border-[#e9d99c] bg-[#fff8df] text-[#94722a]"
+                        : "border-[#e1e6e0] bg-white text-[#758178] hover:bg-[#f7f9f5]"
+                    }`}
+                  >
+                    <Star size={13} fill={favoritesOnly ? "currentColor" : "none"} />
+                    Favorites
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="table-scroll">
+                  <table className="w-full min-w-[760px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-[#edf0ec] bg-[#fafbf9] text-[8px] font-semibold uppercase tracking-[.7px] text-[#929d95]">
+                        <th className="px-3 py-3">Name</th>
+                        <th className="px-3 py-3">Phone number</th>
+                        <th className="px-3 py-3 text-center">Favorite</th>
+                        <th className="px-3 py-3 text-right">Transactions</th>
+                        <th className="px-3 py-3">Last active date</th>
+                        <th className="px-3 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customerDirectoryRows.map((customer) => {
+                        const editing = editingCustomerId === customer.id;
+                        return (
+                          <tr
+                            key={customer.id}
+                            className="border-b border-[#f0f2ef] last:border-0 hover:bg-[#fbfcfa]"
+                          >
+                            <td className="px-3 py-2.5">
+                              {editing ? (
+                                <input
+                                  aria-label="Edit customer name"
+                                  value={customerEditName}
+                                  onChange={(event) =>
+                                    setCustomerEditName(
+                                      formatCustomerName(event.target.value),
+                                    )
+                                  }
+                                  className="h-8 w-full rounded-md border border-[#dfe5de] px-2 text-[10px] outline-none focus:border-[#96b872]"
+                                />
+                              ) : (
+                                <span className="text-[10px] font-medium text-[#37463d]">
+                                  {customer.name || "Unnamed customer"}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {editing ? (
+                                <input
+                                  aria-label="Edit customer phone number"
+                                  inputMode="tel"
+                                  value={customerEditPhone}
+                                  onChange={(event) =>
+                                    setCustomerEditPhone(
+                                      formatMyanmarPhone(event.target.value),
+                                    )
+                                  }
+                                  className="h-8 w-full rounded-md border border-[#dfe5de] px-2 text-[10px] outline-none focus:border-[#96b872]"
+                                />
+                              ) : (
+                                <span className="text-[10px] text-[#69766e]">
+                                  {customer.phone || "—"}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5 text-center">
+                              <button
+                                type="button"
+                                aria-label={
+                                  customer.is_favorite
+                                    ? `Remove ${customer.name} from favorites`
+                                    : `Add ${customer.name} to favorites`
+                                }
+                                aria-pressed={customer.is_favorite}
+                                onClick={() =>
+                                  toggleCustomerFavorite(customer.id)
+                                }
+                                className={`grid size-7 place-items-center rounded-md transition ${
+                                  customer.is_favorite
+                                    ? "text-[#d4a72c] hover:bg-[#fff8df]"
+                                    : "text-[#b1bbb2] hover:bg-[#f5f7f3] hover:text-[#d4a72c]"
+                                }`}
+                              >
+                                <Star
+                                  size={14}
+                                  fill={
+                                    customer.is_favorite
+                                      ? "currentColor"
+                                      : "none"
+                                  }
+                                />
+                              </button>
+                            </td>
+                            <td className="number-font px-3 py-2.5 text-right text-[10px] text-[#58665d]">
+                              {customer.stats.count}
+                            </td>
+                            <td className="px-3 py-2.5 text-[9px] text-[#7b8780]">
+                              {customer.stats.lastActive ??
+                                customer.lastUsed.slice(0, 10) ??
+                                "—"}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <div className="flex justify-end gap-1">
+                                {editing ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        saveCustomerEdit(customer.id)
+                                      }
+                                      aria-label="Save customer changes"
+                                      title="Save changes"
+                                      className="grid size-7 place-items-center rounded-md text-[#4d783f] hover:bg-[#eff7e6]"
+                                    >
+                                      <Check size={14} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={cancelCustomerEdit}
+                                      aria-label="Cancel customer edit"
+                                      title="Cancel"
+                                      className="grid size-7 place-items-center rounded-md text-[#839087] hover:bg-[#f2f4f1]"
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => beginCustomerEdit(customer)}
+                                      aria-label={`Edit ${customer.name}`}
+                                      title="Edit customer"
+                                      className="grid size-7 place-items-center rounded-md text-[#73877a] hover:bg-[#edf4e8]"
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteCustomer(customer)}
+                                      aria-label={`Delete ${customer.name}`}
+                                      title="Delete customer"
+                                      className="grid size-7 place-items-center rounded-md text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {customerDirectoryRows.length === 0 && (
+                  <div className="flex min-h-[140px] flex-col items-center justify-center px-4 text-center">
+                    <Users size={20} className="text-[#a1ada3]" />
+                    <p className="mb-0 mt-2 text-[10px] font-medium text-[#68756c]">
+                      {customerDirectory.length
+                        ? "No customers match this search."
+                        : "No saved customers yet."}
+                    </p>
+                    <p className="mb-0 mt-1 text-[9px] text-[#9aa49c]">
+                      Customer pairs are saved when you record a transaction.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
           {activeTab === "reports" && (
             <section id="reports" className="scroll-mt-24">
+              <div className="mb-5 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="flex flex-col justify-between gap-3 border-b border-[#edf0ec] px-4 py-3 sm:flex-row sm:items-center">
+                  <div>
+                    <h3 className="m-0 flex items-center gap-2 text-[13px] font-semibold">
+                      <Users size={15} className="text-[#668d4e]" />
+                      Customer Ranking &amp; Analytics
+                    </h3>
+                    <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                      Customer activity and volume for the selected period
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        ["today", "Today"],
+                        ["month", "This Month"],
+                        ["all", "All Time"],
+                        ["custom", "Custom Range"],
+                      ] as [CustomerReportRange, string][]
+                    ).map(([range, label]) => (
+                      <button
+                        key={range}
+                        type="button"
+                        aria-pressed={customerReportRange === range}
+                        onClick={() => setCustomerReportRange(range)}
+                        className={`h-7 rounded-md px-2.5 text-[9px] font-semibold transition ${
+                          customerReportRange === range
+                            ? "bg-[#173c31] text-white"
+                            : "bg-[#f4f6f2] text-[#6d7a71] hover:bg-[#eaf0e5]"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={exportCustomerRankings}
+                      title="Export customer analytics CSV"
+                      className="grid size-7 place-items-center rounded-md text-[#568447] transition hover:bg-[#eef5e7]"
+                    >
+                      <FileSpreadsheet size={15} />
+                    </button>
+                  </div>
+                </div>
+                {customerReportRange === "custom" && (
+                  <div className="flex flex-wrap gap-2 border-b border-[#edf0ec] bg-[#fafbf9] px-4 py-2.5">
+                    <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                      <span className="text-[9px] text-[#87928a]">From</span>
+                      <input
+                        aria-label="Customer analytics start date"
+                        type="date"
+                        value={customerReportFrom}
+                        onChange={(event) =>
+                          setCustomerReportFrom(event.target.value)
+                        }
+                        className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                      />
+                    </label>
+                    <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                      <span className="text-[9px] text-[#87928a]">To</span>
+                      <input
+                        aria-label="Customer analytics end date"
+                        type="date"
+                        value={customerReportTo}
+                        onChange={(event) =>
+                          setCustomerReportTo(event.target.value)
+                        }
+                        className="w-[112px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                      />
+                    </label>
+                  </div>
+                )}
+                <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {(
+                    [
+                      [
+                        "Most Frequent Customers",
+                        customerRankings.frequent,
+                        "count",
+                        "Transactions",
+                      ],
+                      [
+                        "Top Cash-In Customers",
+                        customerRankings.cashIn,
+                        "cashIn",
+                        "MMK",
+                      ],
+                      [
+                        "Top Cash-Out Customers",
+                        customerRankings.cashOut,
+                        "cashOut",
+                        "MMK",
+                      ],
+                      [
+                        "Top Commission Generators",
+                        customerRankings.commission,
+                        "commission",
+                        "MMK",
+                      ],
+                    ] as const
+                  ).map(([title, customers, metric, unit]) => (
+                    <div
+                      key={title}
+                      className="min-w-0 rounded-lg border border-[#edf0ec] bg-[#fcfdfb] p-3"
+                    >
+                      <h4 className="m-0 text-[10px] font-semibold text-[#445249]">
+                        {title}
+                      </h4>
+                      <div className="mt-2 max-h-52 space-y-1 overflow-y-auto">
+                        {customers.map((customer, index) => (
+                          <div
+                            key={`${customerPairKey(customer.name, customer.phone)}-${index}`}
+                            className="flex items-start justify-between gap-2 border-t border-[#f0f2ef] py-1.5 first:border-0"
+                          >
+                            <div className="flex min-w-0 items-start gap-1.5">
+                              <span className="number-font mt-px text-[8px] text-[#96a198]">
+                                {index + 1}.
+                              </span>
+                              <span className="min-w-0">
+                                <span className="block truncate text-[9px] font-medium text-[#45534a]">
+                                  {customer.name}
+                                </span>
+                                <span className="block text-[8px] text-[#929d95]">
+                                  {customer.phone || "No phone"}
+                                </span>
+                              </span>
+                            </div>
+                            <span className="number-font shrink-0 text-right text-[9px] font-semibold text-[#58665d]">
+                              {metric === "count"
+                                ? customer.count
+                                : formatMMK(customer[metric])}
+                              <span className="ml-1 text-[7px] font-normal text-[#98a39b]">
+                                {unit}
+                              </span>
+                            </span>
+                          </div>
+                        ))}
+                        {customers.length === 0 && (
+                          <p className="m-0 py-5 text-center text-[9px] text-[#929d95]">
+                            No customer activity for this period.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="m-0 border-t border-[#edf0ec] px-4 py-2 text-[8px] text-[#929d95]">
+                  Based on {customerAnalyticsTransactions.length} transactions
+                  in the selected date range.
+                </p>
+              </div>
               <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
                 <div>
                   <h3 className="m-0 text-[13px] font-semibold">
@@ -3388,7 +4033,7 @@ function LedgerDashboard({
         </div>
       </main>
       <nav
-        className="app-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-[#e0e6df] bg-white/95 backdrop-blur"
+        className="app-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-[#e0e6df] bg-white/95 backdrop-blur"
         aria-label="Primary navigation"
       >
         {(
@@ -3401,6 +4046,7 @@ function LedgerDashboard({
               label: "Reconciliation",
               icon: CircleCheck,
             },
+            { id: "customers", label: "Customers", icon: Users },
             { id: "reports", label: "Reports", icon: FileText },
           ] as { id: AppTab; label: string; icon: IconComponent }[]
         ).map((tab) => {
@@ -3426,6 +4072,11 @@ function LedgerDashboard({
               active: "text-violet-600",
               inactive: "text-violet-400",
               background: "bg-violet-100",
+            },
+            customers: {
+              active: "text-amber-700",
+              inactive: "text-amber-500",
+              background: "bg-amber-100",
             },
             reports: {
               active: "text-rose-600",

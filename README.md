@@ -8,7 +8,9 @@ wallets, sessions, transactions, and customer directory in Supabase.
 1. Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in
    `.env.local`.
 2. Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL
-   Editor to create the tables and enable per-user row-level security.
+   Editor to create the tables, enable per-user row-level security, and add
+   customer favorites and indexed transaction customer/date fields. Re-run it
+   after deploying the customer analytics update to apply the new columns.
 3. Enable Email authentication in the Supabase project's Authentication
    settings. If email confirmation is enabled, new users must confirm their
    address before signing in.

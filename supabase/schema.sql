@@ -31,25 +31,51 @@ alter table public.sessions enable row level security;
 alter table public.transactions enable row level security;
 alter table public.customers enable row level security;
 
+alter table public.customers
+  add column if not exists is_favorite boolean not null default false;
+
+alter table public.customers
+  alter column is_favorite set default false;
+
+update public.customers
+set is_favorite = (data->>'is_favorite') = 'true'
+where data ? 'is_favorite';
+
+alter table public.transactions
+  add column if not exists customer_name text
+    generated always as (coalesce(data->>'customer', '')) stored,
+  add column if not exists phone_number text
+    generated always as (coalesce(data->>'phone', '')) stored,
+  add column if not exists transaction_date text
+    generated always as (coalesce(data->>'date', '')) stored;
+
+create index if not exists transactions_customer_date_idx
+  on public.transactions (user_id, transaction_date, customer_name, phone_number);
+
 grant select, insert, update, delete
   on public.wallets, public.sessions, public.transactions, public.customers
   to authenticated;
 
+drop policy if exists "Users can access their own wallets" on public.wallets;
 create policy "Users can access their own wallets"
   on public.wallets for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can access their own sessions" on public.sessions;
 create policy "Users can access their own sessions"
   on public.sessions for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can access their own transactions"
+  on public.transactions;
 create policy "Users can access their own transactions"
   on public.transactions for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can access their own customers" on public.customers;
 create policy "Users can access their own customers"
   on public.customers for all
   using (auth.uid() = user_id)
