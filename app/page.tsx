@@ -659,6 +659,7 @@ function LedgerDashboard({
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
+  const [syncError, setSyncError] = useState("");
   const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
@@ -697,7 +698,21 @@ function LedgerDashboard({
     void loadLedgerSnapshot(user)
       .then((snapshot) => {
         if (cancelled) return;
-        setLedger(snapshot.ledger);
+        setLedger((current) => {
+          const transactions = new Map(
+            snapshot.ledger.transactions.map((transaction) => [
+              transaction.id,
+              transaction,
+            ]),
+          );
+          for (const transaction of current.transactions) {
+            transactions.set(transaction.id, transaction);
+          }
+          return {
+            ...snapshot.ledger,
+            transactions: Array.from(transactions.values()),
+          };
+        });
         setCustomerDirectory(snapshot.customers);
         setHydrated(true);
       })
@@ -726,17 +741,13 @@ function LedgerDashboard({
         .then(() => saveLedgerSnapshot(user, ledger, customerDirectory))
         .then(() => {
           if (!cancelled) {
-            setMessage((current) =>
-              current.startsWith("Cloud sync failed")
-                ? "Cloud sync restored."
-                : current,
-            );
+            setSyncError("");
           }
         })
         .catch((error: unknown) => {
           console.error("Could not save the ledger to Supabase.", error);
           if (!cancelled) {
-            setMessage(
+            setSyncError(
               `Cloud sync failed: ${
                 error instanceof Error ? error.message : "please try again."
               }`,
@@ -1455,7 +1466,7 @@ function LedgerDashboard({
     notify("Session closed. Reconciliation is ready.");
   }
 
-  function addTransaction(event: FormEvent<HTMLFormElement>) {
+  async function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isOnline) {
       notify("Connect to the internet before updating your cloud ledger.");
@@ -1533,12 +1544,29 @@ function LedgerDashboard({
       notify("Choose an active account to receive the commission.");
       return;
     }
+    const {
+      data: { user: authenticatedUser },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !authenticatedUser || authenticatedUser.id !== user.id) {
+      const errorMessage =
+        authError?.message ?? "Your authenticated user session is unavailable.";
+      console.error("Cannot create transaction without the active user.", {
+        authError,
+        expectedUserId: user.id,
+      });
+      notify(`Could not save transaction: ${errorMessage}`);
+      return;
+    }
     const now = new Date();
     const existingTransaction = editingTransactionId
       ? ledger.transactions.find((item) => item.id === editingTransactionId)
       : undefined;
     const transaction: LedgerTransaction = {
       id: existingTransaction?.id ?? crypto.randomUUID(),
+      user_id: authenticatedUser.id,
+      session_id: existingTransaction?.session_id ?? todaySession?.date ?? null,
+      created_at: existingTransaction?.created_at ?? now.toISOString(),
       date: activeDate,
       time:
         existingTransaction?.time ??
@@ -2206,18 +2234,18 @@ function LedgerDashboard({
           </div>
         </header>
         <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
-          {message && (
+          {(syncError || message) && (
             <div
-              role="status"
+              role={syncError ? "alert" : "status"}
               className={`fade-up mb-4 flex items-center gap-2 rounded-[8px] border px-3.5 py-2.5 text-[11px] ${
-                message.startsWith("Cloud sync failed")
+                syncError
                   ? "border-[#f0d1c5] bg-[#fff4ee] text-[#a65335]"
                   : "border-[#d9e8c9] bg-[#eff7e6] text-[#42642d]"
               }`}
             >
-              <CircleCheck size={15} />
-              <span className="min-w-0 flex-1">{message}</span>
-              {message.startsWith("Cloud sync failed") && isOnline && (
+              {syncError ? <CircleAlert size={15} /> : <CircleCheck size={15} />}
+              <span className="min-w-0 flex-1">{syncError || message}</span>
+              {syncError && isOnline && (
                 <button
                   type="button"
                   onClick={() => setSyncAttempt((attempt) => attempt + 1)}

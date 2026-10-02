@@ -151,7 +151,10 @@ export async function loadLedgerSnapshot(
   const [wallets, sessions, transactions] = await Promise.all([
     supabase.from("wallets").select("id, data").eq("user_id", user.id),
     supabase.from("sessions").select("id, data").eq("user_id", user.id),
-    supabase.from("transactions").select("id, data").eq("user_id", user.id),
+    supabase
+      .from("transactions")
+      .select("id, data, session_id, created_at")
+      .eq("user_id", user.id),
   ]);
 
   throwOnError(wallets.error);
@@ -179,6 +182,20 @@ export async function loadLedgerSnapshot(
     accounts: (wallets.data ?? []).map((record) => record.data),
     sessions: (sessions.data ?? []).map((record) => record.data),
     transactions: (transactions.data ?? []).map((record) => record.data),
+  });
+  const transactionRows = transactions.data ?? [];
+  savedLedger.transactions = savedLedger.transactions.map((transaction) => {
+    const stored = transactionRows.find((row) => row.id === transaction.id);
+    const data =
+      stored?.data && typeof stored.data === "object"
+        ? (stored.data as Partial<LedgerTransaction>)
+        : {};
+    return {
+      ...transaction,
+      user_id: user.id,
+      session_id: stored?.session_id ?? data.session_id ?? transaction.date,
+      created_at: stored?.created_at ?? data.created_at,
+    };
   });
   const customerDirectory = customerRows
     .map((record) =>
@@ -235,6 +252,95 @@ async function synchronizeTable(
       .eq("user_id", userId)
       .in("id", removedIds);
     throwOnError(result.error);
+  }
+}
+
+async function synchronizeTransactions(
+  userId: string,
+  ledger: LedgerData,
+) {
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("id, data, session_id, created_at")
+    .eq("user_id", userId);
+  throwOnError(error);
+
+  const existingRecords = data ?? [];
+  const existingById = new Map(
+    existingRecords.map((record) => [record.id, record]),
+  );
+  const desiredById = new Map(
+    ledger.transactions.map((transaction) => [
+      transaction.id,
+      {
+        ...transaction,
+        user_id: userId,
+        session_id: transaction.session_id ?? transaction.date,
+        created_at:
+          transaction.created_at ?? `${transaction.date}T00:00:00.000Z`,
+      },
+    ]),
+  );
+  const upserts: Array<{
+    id: string;
+    user_id: string;
+    session_id: string | null;
+    created_at: string;
+    data: LedgerTransaction;
+  }> = [];
+  for (const transaction of desiredById.values()) {
+    const existing = existingById.get(transaction.id);
+    const dataIsCurrent =
+      existing && JSON.stringify(existing.data) === JSON.stringify(transaction);
+    const metadataIsCurrent =
+      existing?.session_id === transaction.session_id &&
+      existing?.created_at === transaction.created_at;
+    if (!dataIsCurrent || !metadataIsCurrent) {
+      upserts.push({
+        id: transaction.id,
+        user_id: userId,
+        session_id: transaction.session_id ?? null,
+        created_at: transaction.created_at ?? new Date().toISOString(),
+        data: transaction,
+      });
+    }
+  }
+
+  if (upserts.length) {
+    const result = await supabase
+      .from("transactions")
+      .upsert(upserts, { onConflict: "user_id,id" })
+      .select("id");
+    throwOnError(result.error);
+    const confirmedIds = new Set((result.data ?? []).map((row) => row.id));
+    const unconfirmedIds = upserts
+      .filter((record) => !confirmedIds.has(record.id))
+      .map((record) => record.id);
+    if (unconfirmedIds.length) {
+      throw new Error(
+        `Supabase did not confirm transaction writes: ${unconfirmedIds.join(", ")}`,
+      );
+    }
+  }
+
+  const removedIds = existingRecords
+    .filter((record) => !desiredById.has(record.id))
+    .map((record) => record.id);
+  if (removedIds.length) {
+    const result = await supabase
+      .from("transactions")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", removedIds)
+      .select("id");
+    throwOnError(result.error);
+    const deletedIds = new Set((result.data ?? []).map((row) => row.id));
+    const unconfirmedIds = removedIds.filter((id) => !deletedIds.has(id));
+    if (unconfirmedIds.length) {
+      throw new Error(
+        `Supabase did not confirm transaction deletions: ${unconfirmedIds.join(", ")}`,
+      );
+    }
   }
 }
 
@@ -328,6 +434,15 @@ export async function saveLedgerSnapshot(
   ledger: LedgerData,
   customers: CustomerDirectoryEntry[],
 ) {
+  const {
+    data: { user: authenticatedUser },
+    error: authError,
+  } = await supabase.auth.getUser();
+  throwOnError(authError);
+  if (!authenticatedUser || authenticatedUser.id !== user.id) {
+    throw new Error("The active Supabase user changed before ledger sync.");
+  }
+
   await Promise.all([
     synchronizeTable(
       "wallets",
@@ -342,14 +457,7 @@ export async function saveLedgerSnapshot(
         data: session,
       })),
     ),
-    synchronizeTable(
-      "transactions",
-      user.id,
-      ledger.transactions.map((transaction) => ({
-        id: transaction.id,
-        data: transaction,
-      })),
-    ),
+    synchronizeTransactions(user.id, ledger),
     synchronizeCustomers(user.id, customers),
   ]);
 }

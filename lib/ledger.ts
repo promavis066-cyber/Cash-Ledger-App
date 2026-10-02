@@ -33,6 +33,9 @@ export interface DailySession {
 
 export interface LedgerTransaction {
   id: string;
+  user_id?: string;
+  session_id?: string | null;
+  created_at?: string;
   date: string;
   time: string;
   kind: TransactionKind;

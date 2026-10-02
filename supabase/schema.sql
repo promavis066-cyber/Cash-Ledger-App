@@ -26,6 +26,55 @@ create table if not exists public.customers (
   primary key (user_id, id)
 );
 
+alter table public.transactions
+  add column if not exists session_id text,
+  add column if not exists created_at timestamptz not null default now();
+
+do $$
+declare
+  table_name text;
+  primary_key_name text;
+  primary_key_columns name[];
+begin
+  foreach table_name in array array[
+    'wallets',
+    'sessions',
+    'transactions',
+    'customers'
+  ]
+  loop
+    select constraint_row.conname,
+      array_agg(attribute_row.attname order by key_column.ordinality)
+    into primary_key_name, primary_key_columns
+    from pg_constraint as constraint_row
+    cross join lateral unnest(constraint_row.conkey)
+      with ordinality as key_column(attribute_number, ordinality)
+    join pg_attribute as attribute_row
+      on attribute_row.attrelid = constraint_row.conrelid
+      and attribute_row.attnum = key_column.attribute_number
+    where constraint_row.conrelid = to_regclass('public.' || table_name)
+      and constraint_row.contype = 'p'
+    group by constraint_row.conname;
+
+    if primary_key_columns is distinct from array['user_id', 'id']::name[] then
+      if primary_key_name is not null then
+        execute format(
+          'alter table public.%I drop constraint %I',
+          table_name,
+          primary_key_name
+        );
+      end if;
+      execute format(
+        'alter table public.%I add constraint %I primary key (user_id, id)',
+        table_name,
+        table_name || '_pkey'
+      );
+    end if;
+    primary_key_name := null;
+    primary_key_columns := null;
+  end loop;
+end $$;
+
 alter table public.wallets enable row level security;
 alter table public.sessions enable row level security;
 alter table public.transactions enable row level security;
