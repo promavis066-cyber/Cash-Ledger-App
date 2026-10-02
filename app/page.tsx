@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   FileText,
   LayoutDashboard,
+  LogOut,
   Pencil,
   Plus,
   Printer,
@@ -31,12 +32,12 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import {
   FormEvent,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import type { User } from "@supabase/supabase-js";
 import {
   accountClosingBalances,
   accountDifference,
@@ -49,24 +50,20 @@ import {
   AccountDefinition,
   AccountId,
   AccountKind,
-  STORAGE_KEY,
-  normalizeLedger,
 } from "@/lib/ledger";
+import {
+  loadLedgerSnapshot,
+  saveLedgerSnapshot,
+  type CustomerDirectoryEntry,
+} from "@/lib/ledgerDatabase";
+import { supabase } from "@/lib/supabase";
 
 type ModalKind = "open" | "close" | "accounts" | "admin" | null;
 type AppTab =
   "overview" | "wallet" | "transactions" | "reconciliation" | "reports";
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
-type CustomerDirectoryEntry = {
-  id: string;
-  name: string;
-  phone: string;
-  lastUsed: string;
-};
-
 const ADMIN_PASSWORD = "admin";
-const CUSTOMER_DIRECTORY_STORAGE_KEY = "cash_ledger_customers";
 
 function customerPhoneKey(phone: string) {
   return phone.replace(/\D/g, "");
@@ -323,59 +320,6 @@ function escapeHtml(value: string) {
   });
 }
 
-function persistLedgerRecord(payload: string) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, payload);
-  } catch (error) {
-    console.error("Failed to save ledger data to localStorage.", error);
-    return false;
-  }
-
-  if (!("indexedDB" in window)) return true;
-
-  try {
-    const request = window.indexedDB.open("cash-ledger-db", 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("ledger")) {
-        db.createObjectStore("ledger");
-      }
-    };
-    request.onsuccess = () => {
-      const db = request.result;
-      try {
-        const transaction = db.transaction("ledger", "readwrite");
-        transaction.objectStore("ledger").put(payload, STORAGE_KEY);
-        transaction.oncomplete = () => db.close();
-        transaction.onerror = () => {
-          console.error(
-            "Failed to save ledger data to IndexedDB.",
-            transaction.error,
-          );
-          db.close();
-        };
-        transaction.onabort = () => {
-          console.error("IndexedDB aborted the ledger save.", transaction.error);
-          db.close();
-        };
-      } catch (error) {
-        console.error("Could not start the IndexedDB ledger save.", error);
-        db.close();
-      }
-    };
-    request.onerror = () => {
-      console.error("Could not open the ledger IndexedDB database.", request.error);
-    };
-    request.onblocked = () => {
-      console.error("The ledger IndexedDB save is blocked by another connection.");
-    };
-  } catch (error) {
-    console.error("Could not initialize the IndexedDB ledger save.", error);
-  }
-
-  return true;
-}
-
 function formatDate(
   dateKey: string,
   options: Intl.DateTimeFormatOptions = {
@@ -415,11 +359,217 @@ function commissionAccountId(transaction: LedgerTransaction): AccountId {
 }
 
 export default function Home() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+      setAuthError("");
+    });
+
+    void supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!mounted) return;
+        if (error) {
+          console.error("Could not restore the Supabase auth session.", error);
+          setAuthError(error.message);
+        } else {
+          setUser(data.session?.user ?? null);
+        }
+        setAuthLoading(false);
+      })
+      .catch((error: unknown) => {
+        if (!mounted) return;
+        console.error("Could not restore the Supabase auth session.", error);
+        setAuthError(
+          error instanceof Error ? error.message : "Could not restore session.",
+        );
+        setAuthLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  async function signOut() {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error("Could not sign out of Supabase.", error);
+      throw error;
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#f3f5f2] p-5 text-sm text-[#657269]">
+        Restoring your secure session…
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthenticationView error={authError} />;
+  }
+
+  return <LedgerDashboard key={user.id} user={user} onSignOut={signOut} />;
+}
+
+function AuthenticationView({ error }: { error: string }) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage("");
+    try {
+      if (mode === "signup") {
+        const { data, error: signupError } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+        });
+        if (signupError) throw signupError;
+        if (!data.session) {
+          setMessage("Check your email to confirm your account, then sign in.");
+        }
+      } else {
+        const { error: loginError } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (loginError) throw loginError;
+      }
+    } catch (submitError) {
+      console.error("Supabase email/password authentication failed.", submitError);
+      setMessage(
+        submitError instanceof Error
+          ? submitError.message
+          : "Authentication failed. Please try again.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#f3f5f2] px-4 py-10">
+      <section className="w-full max-w-[420px] rounded-2xl border border-[#e3e8e2] bg-white p-6 shadow-[0_18px_60px_rgba(23,60,49,0.08)] sm:p-9">
+        <div className="mb-8 flex items-center gap-3">
+          <span className="grid size-11 place-items-center rounded-xl bg-[#c6f36b] text-[#173c31]">
+            <Activity size={22} strokeWidth={2.5} />
+          </span>
+          <div>
+            <p className="m-0 text-lg font-semibold tracking-tight text-[#17251f]">
+              Cash Ledger
+            </p>
+            <p className="m-0 mt-0.5 text-xs text-[#7b8780]">
+              Secure cloud-backed operations
+            </p>
+          </div>
+        </div>
+        <h1 className="m-0 text-2xl font-semibold tracking-tight text-[#17251f]">
+          {mode === "login" ? "Welcome back" : "Create your account"}
+        </h1>
+        <p className="mb-6 mt-2 text-sm leading-6 text-[#7b8780]">
+          {mode === "login"
+            ? "Sign in to access your cash ledger."
+            : "Create an account to start using your private ledger."}
+        </p>
+        <form className="space-y-4" onSubmit={submit}>
+          <label className="field-label text-xs">
+            Email address
+            <span className="input-wrap h-11 rounded-lg">
+              <input
+                autoComplete="email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                required
+              />
+            </span>
+          </label>
+          <label className="field-label text-xs">
+            Password
+            <span className="input-wrap h-11 rounded-lg">
+              <input
+                autoComplete={
+                  mode === "login" ? "current-password" : "new-password"
+                }
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={6}
+                required
+              />
+            </span>
+          </label>
+          {(error || message) && (
+            <p
+              role="alert"
+              className="m-0 rounded-lg bg-[#fff4ee] px-3 py-2.5 text-sm leading-5 text-[#a65335]"
+            >
+              {message || error}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="flex h-11 w-full items-center justify-center rounded-lg bg-[#173c31] px-4 text-sm font-semibold text-white transition hover:bg-[#245745] disabled:cursor-wait disabled:opacity-65"
+          >
+            {submitting
+              ? "Please wait…"
+              : mode === "login"
+                ? "Sign in"
+                : "Create account"}
+          </button>
+        </form>
+        <p className="mb-0 mt-6 text-center text-sm text-[#7b8780]">
+          {mode === "login" ? "New to Cash Ledger?" : "Already have an account?"}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "login" ? "signup" : "login");
+              setMessage("");
+            }}
+            className="font-semibold text-[#245745] hover:underline"
+          >
+            {mode === "login" ? "Create account" : "Sign in"}
+          </button>
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function LedgerDashboard({
+  user,
+  onSignOut,
+}: {
+  user: User;
+  onSignOut: () => Promise<void>;
+}) {
   const today = getDateKey(new Date());
   const [activeDate, setActiveDate] = useState(today);
   const [unlockedDate, setUnlockedDate] = useState<string | null>(null);
   const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
   const [hydrated, setHydrated] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [syncAttempt, setSyncAttempt] = useState(0);
+  const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const [modal, setModal] = useState<ModalKind>(null);
   const [activeTab, setActiveTab] = useState<AppTab>("overview");
   const [adminAction, setAdminAction] = useState<AdminAction>("reopen");
@@ -513,55 +663,71 @@ export default function Home() {
       document.removeEventListener("pointerdown", handleOutsidePointerDown);
   }, []);
 
-  const persistLedger = useCallback((nextLedger: LedgerData) => {
-    const payload = JSON.stringify(nextLedger);
-    void persistLedgerRecord(payload);
-  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void loadLedgerSnapshot(user)
+      .then((snapshot) => {
+        if (cancelled) return;
+        setLedger(snapshot.ledger);
+        setCustomerDirectory(snapshot.customers);
+        setHydrated(true);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.error("Could not load the user's Supabase ledger.", error);
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Could not load your cloud ledger.",
+        );
+        setHydrated(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAttempt, user]);
 
   useEffect(() => {
+    if (!hydrated || loadError || !isOnline) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      try {
-        const savedLedger = window.localStorage.getItem(STORAGE_KEY);
-        if (savedLedger) {
-          const parsed = JSON.parse(savedLedger) as LedgerData;
-          setLedger(normalizeLedger(parsed));
-        }
-      } catch (error) {
-        console.error("Failed to load locally saved ledger data.", error);
-        setMessage("Saved ledger data could not be read on this device.");
-      }
-      try {
-        const savedCustomers = window.localStorage.getItem(
-          CUSTOMER_DIRECTORY_STORAGE_KEY,
-        );
-        if (savedCustomers) {
-          const parsed: unknown = JSON.parse(savedCustomers);
-          if (Array.isArray(parsed)) {
-            setCustomerDirectory(
-              parsed.filter(
-                (customer): customer is CustomerDirectoryEntry =>
-                  customer !== null &&
-                  typeof customer === "object" &&
-                  typeof customer.id === "string" &&
-                  typeof customer.name === "string" &&
-                  typeof customer.phone === "string" &&
-                  typeof customer.lastUsed === "string",
-              ),
+      if (cancelled) return;
+      syncQueue.current = syncQueue.current
+        .catch(() => undefined)
+        .then(() => saveLedgerSnapshot(user, ledger, customerDirectory))
+        .then(() => {
+          if (!cancelled) {
+            setMessage((current) =>
+              current.startsWith("Cloud sync failed")
+                ? "Cloud sync restored."
+                : current,
             );
           }
-        }
-      } catch (error) {
-        console.error("Failed to load the local customer directory.", error);
-      }
-      setHydrated(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    persistLedger(ledger);
-  }, [hydrated, ledger, persistLedger]);
+        })
+        .catch((error: unknown) => {
+          console.error("Could not save the ledger to Supabase.", error);
+          if (!cancelled) {
+            setMessage(
+              `Cloud sync failed: ${
+                error instanceof Error ? error.message : "please try again."
+              }`,
+            );
+          }
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    customerDirectory,
+    hydrated,
+    isOnline,
+    ledger,
+    loadError,
+    syncAttempt,
+    user,
+  ]);
 
   const todaySession =
     ledger.sessions.find((session) => session.date === activeDate) ?? null;
@@ -770,6 +936,16 @@ export default function Home() {
     window.setTimeout(() => setMessage(""), 3500);
   }
 
+  async function handleSignOut() {
+    try {
+      await onSignOut();
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "Could not sign out right now.",
+      );
+    }
+  }
+
   function selectCustomer(customer: CustomerDirectoryEntry) {
     setCustomerInput(customer.name);
     setPhoneInput(customer.phone);
@@ -802,14 +978,6 @@ export default function Home() {
       : [updatedCustomer, ...customerDirectory];
 
     setCustomerDirectory(updatedDirectory);
-    try {
-      window.localStorage.setItem(
-        CUSTOMER_DIRECTORY_STORAGE_KEY,
-        JSON.stringify(updatedDirectory),
-      );
-    } catch (error) {
-      console.error("Failed to save the local customer directory.", error);
-    }
   }
 
   function startOpeningFlow() {
@@ -894,6 +1062,10 @@ export default function Home() {
 
   function openSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     const isUpdatingOpening = Boolean(todaySession);
     const selectedAccounts = (todaySession ? ledger.accounts : accounts).filter(
       (account) => openingAccountIds.includes(account.id),
@@ -950,6 +1122,10 @@ export default function Home() {
 
   function closeSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     if (!todaySession || !isOpen) return;
     const groundClosing = Object.fromEntries(
       todayActiveAccounts.map((account) => [
@@ -990,6 +1166,10 @@ export default function Home() {
 
   function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     const amount = parseCurrencyInput(amountInput);
     const commission =
       transactionKind === "TRANSFER" || transactionKind === "EXPENSE"
@@ -1096,17 +1276,7 @@ export default function Home() {
           )
         : [transaction, ...ledger.transactions],
     };
-    try {
-      if (!persistLedgerRecord(JSON.stringify(nextLedger))) {
-        notify("Could not save this transaction to local storage.");
-        return;
-      }
-      setLedger(nextLedger);
-    } catch (error) {
-      console.error("Failed to save transaction locally.", error);
-      notify("Could not save this transaction to local storage.");
-      return;
-    }
+    setLedger(nextLedger);
     rememberCustomer(transaction.customer, transaction.phone);
     setEditingTransactionId(null);
     setAmountInput("");
@@ -1115,11 +1285,9 @@ export default function Home() {
     setPhoneInput("");
     setNoteInput("");
     notify(
-      !window.navigator.onLine
-        ? "Saved to Local Storage successfully."
-        : wasEditing
-          ? "Transaction updated and saved locally."
-          : `${kindLabel(transactionKind)} saved locally.`,
+      wasEditing
+        ? "Transaction updated; syncing to your cloud ledger."
+        : `${kindLabel(transactionKind)} added; syncing to your cloud ledger.`,
     );
   }
 
@@ -1154,6 +1322,10 @@ export default function Home() {
   }
 
   function removeTransaction(id: string) {
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     setLedger((current) => ({
       ...current,
       transactions: current.transactions.filter(
@@ -1161,11 +1333,15 @@ export default function Home() {
       ),
     }));
     if (editingTransactionId === id) setEditingTransactionId(null);
-    notify("Transaction removed from this device.");
+    notify("Transaction removed; syncing to your cloud ledger.");
   }
 
   function submitAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     const name = accountForm.name.trim();
     if (!name) return;
     const shortName = accountForm.shortName.trim() || name;
@@ -1260,6 +1436,10 @@ export default function Home() {
   }
 
   function deleteAccount(account: AccountDefinition) {
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     if (account.id === "cash-drawer") {
       notify("Cash drawer is required and cannot be deleted.");
       return;
@@ -1296,6 +1476,10 @@ export default function Home() {
   }
 
   function restoreAccount(accountId: AccountId) {
+    if (!isOnline) {
+      notify("Connect to the internet before updating your cloud ledger.");
+      return;
+    }
     setLedger((current) => ({
       ...current,
       accounts: current.accounts.map((account) =>
@@ -1512,6 +1696,49 @@ export default function Home() {
     )
     .reduce((total, transaction) => total + transaction.amount, 0);
 
+  if (!hydrated) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#f3f5f2] p-5 text-sm text-[#657269]">
+        Loading your cloud ledger…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#f3f5f2] px-4 py-10">
+        <section className="w-full max-w-[440px] rounded-2xl border border-[#e3e8e2] bg-white p-6 shadow-sm sm:p-8">
+          <h1 className="m-0 text-xl font-semibold text-[#17251f]">
+            Could not load your ledger
+          </h1>
+          <p role="alert" className="mb-5 mt-3 text-sm leading-6 text-[#a65335]">
+            {loadError}
+          </p>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setHydrated(false);
+                setLoadError("");
+                setLoadAttempt((attempt) => attempt + 1);
+              }}
+              className="h-10 flex-1 rounded-lg bg-[#173c31] px-4 text-sm font-semibold text-white hover:bg-[#245745]"
+            >
+              Try again
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="h-10 rounded-lg border border-[#dfe5de] px-4 text-sm font-semibold text-[#526158] hover:bg-[#f6f8f5]"
+            >
+              Sign out
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <div className="dashboard-shell flex min-h-screen">
       <aside className="hidden">
@@ -1600,7 +1827,7 @@ export default function Home() {
           <p className="mb-0 mt-2 text-[10px] leading-4 text-white/45">
             {isOpen
               ? `Opened ${todaySession?.openedAt ? new Date(todaySession.openedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "today"}`
-              : "Your records are saved on this device."}
+              : "Your records are stored securely in the cloud."}
           </p>
         </div>
       </aside>
@@ -1640,9 +1867,9 @@ export default function Home() {
                 className={`size-1.5 rounded-full ${isOnline ? "bg-[#53a766]" : "bg-[#d28a4d]"}`}
               />
               {isOnline ? (
-                "Back Online"
+                "Internet connected"
               ) : (
-                <>Offline Mode · {ledger.transactions.length} saved locally</>
+                "Offline · cloud changes paused"
               )}
             </div>
             {isOpen ? (
@@ -1675,16 +1902,39 @@ export default function Home() {
                 <span className="hidden min-[390px]:inline">Open session</span>
               </button>
             )}
+            <button
+              type="button"
+              aria-label="Sign out"
+              title={`Sign out${user.email ? ` (${user.email})` : ""}`}
+              onClick={handleSignOut}
+              className="flex h-9 shrink-0 items-center gap-1.5 rounded-[8px] border border-[#dce4da] bg-white px-2 text-[10px] font-semibold text-[#526158] transition hover:bg-[#f5f8f3] sm:px-3"
+            >
+              <LogOut size={14} />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
           </div>
         </header>
         <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
           {message && (
             <div
               role="status"
-              className="fade-up mb-4 flex items-center gap-2 rounded-[8px] border border-[#d9e8c9] bg-[#eff7e6] px-3.5 py-2.5 text-[11px] text-[#42642d]"
+              className={`fade-up mb-4 flex items-center gap-2 rounded-[8px] border px-3.5 py-2.5 text-[11px] ${
+                message.startsWith("Cloud sync failed")
+                  ? "border-[#f0d1c5] bg-[#fff4ee] text-[#a65335]"
+                  : "border-[#d9e8c9] bg-[#eff7e6] text-[#42642d]"
+              }`}
             >
               <CircleCheck size={15} />
-              {message}
+              <span className="min-w-0 flex-1">{message}</span>
+              {message.startsWith("Cloud sync failed") && isOnline && (
+                <button
+                  type="button"
+                  onClick={() => setSyncAttempt((attempt) => attempt + 1)}
+                  className="shrink-0 font-semibold underline underline-offset-2"
+                >
+                  Retry
+                </button>
+              )}
             </div>
           )}
           {activeTab === "overview" && (
@@ -2371,7 +2621,7 @@ export default function Home() {
                 )}
                 <div className="mt-4 flex flex-col-reverse justify-between gap-3 border-t border-[#edf0ec] pt-3.5 sm:flex-row sm:items-center">
                   <span className="text-[9px] text-[#99a39b]">
-                    Transactions are saved in this browser on this device.
+                    Transactions are stored in your secure cloud ledger.
                   </span>
                   <button
                     disabled={!isOpen || transferAccountError}
@@ -3129,9 +3379,9 @@ export default function Home() {
             <span className="flex items-center gap-1.5">
               <span className={`size-1.5 rounded-full ${isOnline ? "bg-[#a5cf73]" : "bg-[#d88b4a]"}`} />
               {isOnline ? (
-                "Back Online"
+                "Internet connected"
               ) : (
-                <>Offline Mode · {ledger.transactions.length} saved locally</>
+                "Offline · cloud changes paused"
               )}
             </span>
           </footer>

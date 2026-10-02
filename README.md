@@ -1,5 +1,18 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Supabase setup
+
+The app uses Supabase Email/Password Authentication and stores each user's
+wallets, sessions, transactions, and customer directory in Supabase.
+
+1. Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in
+   `.env.local`.
+2. Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL
+   Editor to create the tables and enable per-user row-level security.
+3. Enable Email authentication in the Supabase project's Authentication
+   settings. If email confirmation is enabled, new users must confirm their
+   address before signing in.
+
 ## Getting Started
 
 First, run the development server:

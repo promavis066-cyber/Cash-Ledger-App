@@ -52,8 +52,6 @@ export interface LedgerData {
   transactions: LedgerTransaction[];
 }
 
-export const STORAGE_KEY = "cash-ledger-v1";
-
 export const defaultAccounts: AccountDefinition[] = [
   {
     id: "cash-drawer",
