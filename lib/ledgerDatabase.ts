@@ -507,15 +507,13 @@ export async function deleteCustomerRecord(
   customerId: string,
 ): Promise<void> {
   const { row } = await findCustomerRow(user, customerId);
-  const result = await supabase
+  const { error } = await supabase
     .from("customers")
     .delete()
     .eq("user_id", user.id)
-    .eq("id", row.id)
-    .select("id")
-    .maybeSingle();
-  throwOnError(result.error);
-  if (!result.data) {
-    throw new Error(`Supabase did not delete customer ${customerId}.`);
+    .eq("id", row.id);
+  if (error) {
+    console.error("Delete customer error:", error);
+    throw new Error(error.message);
   }
 }
