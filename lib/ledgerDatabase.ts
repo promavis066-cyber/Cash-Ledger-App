@@ -38,6 +38,11 @@ function storageId(userId: string, recordId: string) {
   return `${userId}:${recordId}`;
 }
 
+function customerPairKey(customer: Pick<CustomerDirectoryEntry, "name" | "phone">) {
+  const phone = customer.phone.replace(/\D/g, "").replace(/^0+/, "");
+  return `${customer.name.trim().toLocaleLowerCase()}|${phone}`;
+}
+
 function dataRecordId(data: unknown, table: "wallets" | "sessions"): string {
   if (data && typeof data === "object") {
     const id = table === "sessions" && "date" in data ? data.date : "id" in data ? data.id : undefined;
@@ -341,6 +346,25 @@ async function applyTableChanges(
         throw new Error(`Supabase did not delete ${table} record ${id}.`);
       }
       continue;
+    }
+
+    if (table === "customers" && !existing) {
+      const newCustomer = parseCustomer(newEntry.data);
+      if (
+        newCustomer &&
+        rows.some((row) => {
+          const remoteCustomer = parseCustomer(
+            row.data,
+            "is_favorite" in row ? row.is_favorite : undefined,
+          );
+          return (
+            remoteCustomer &&
+            customerPairKey(remoteCustomer) === customerPairKey(newCustomer)
+          );
+        })
+      ) {
+        continue;
+      }
     }
 
     const databaseId = existing?.id ?? storageId(userId, id);

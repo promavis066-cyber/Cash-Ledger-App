@@ -78,11 +78,30 @@ type CustomerReportRange = "today" | "month" | "all" | "custom";
 const ADMIN_PASSWORD = "admin";
 
 function customerPhoneKey(phone: string) {
-  return phone.replace(/\D/g, "");
+  return phone.replace(/\D/g, "").replace(/^0+/, "");
 }
 
 function customerPairKey(name: string, phone: string) {
   return `${name.trim().toLocaleLowerCase()}|${customerPhoneKey(phone)}`;
+}
+
+function uniqueCustomerEntries(
+  customers: CustomerDirectoryEntry[],
+): CustomerDirectoryEntry[] {
+  const unique = new Map<string, CustomerDirectoryEntry>();
+  for (const customer of customers) {
+    const key = customerPairKey(customer.name, customer.phone);
+    const existing = unique.get(key);
+    if (
+      !existing ||
+      (customer.is_favorite && !existing.is_favorite) ||
+      (customer.is_favorite === existing.is_favorite &&
+        customer.lastUsed > existing.lastUsed)
+    ) {
+      unique.set(key, customer);
+    }
+  }
+  return [...unique.values()];
 }
 
 const accountColorOptions = [
@@ -710,7 +729,7 @@ function LedgerDashboard({
       .then((snapshot) => {
         if (cancelled) return;
         setLedger(snapshot.ledger);
-        setCustomerDirectory(snapshot.customers);
+        setCustomerDirectory(uniqueCustomerEntries(snapshot.customers));
         setHydrated(true);
       })
       .catch((error: unknown) => {
@@ -830,20 +849,27 @@ function LedgerDashboard({
   const transactionAccounts = isOpen
     ? todayActiveAccounts.filter((account) => !account.deletedAt)
     : accounts;
+  const sortCustomerSuggestions = (customers: CustomerDirectoryEntry[]) =>
+    uniqueCustomerEntries(customers).sort(
+      (left, right) =>
+        Number(right.is_favorite) - Number(left.is_favorite) ||
+        right.lastUsed.localeCompare(left.lastUsed) ||
+        left.name.localeCompare(right.name),
+    );
   const customerNameSuggestions = customerInput.trim()
-    ? customerDirectory
+    ? sortCustomerSuggestions(customerDirectory
         .filter((customer) =>
           customer.name
             .toLowerCase()
             .includes(customerInput.trim().toLowerCase()),
-        )
+        ))
     : [];
   const customerPhoneQuery = customerPhoneKey(phoneInput);
   const customerPhoneSuggestions = customerPhoneQuery
-    ? customerDirectory
+    ? sortCustomerSuggestions(customerDirectory
         .filter((customer) =>
           customerPhoneKey(customer.phone).includes(customerPhoneQuery),
-        )
+        ))
     : [];
   const transferAccountError =
     transactionKind === "TRANSFER" && fromAccountId === toAccountId;
@@ -1050,21 +1076,8 @@ function LedgerDashboard({
         existing.lastActive = transaction.date;
       stats.set(key, existing);
     }
-    const uniqueCustomers = new Map<string, CustomerDirectoryEntry>();
-    for (const customer of customerDirectory) {
-      const key = customerPairKey(customer.name, customer.phone);
-      const existing = uniqueCustomers.get(key);
-      if (
-        !existing ||
-        (customer.is_favorite && !existing.is_favorite) ||
-        (customer.is_favorite === existing.is_favorite &&
-          customer.lastUsed > existing.lastUsed)
-      ) {
-        uniqueCustomers.set(key, customer);
-      }
-    }
     const query = customerSearch.trim().toLocaleLowerCase();
-    return Array.from(uniqueCustomers.values())
+    return uniqueCustomerEntries(customerDirectory)
       .filter(
         (customer) =>
           (!favoritesOnly || customer.is_favorite) &&
