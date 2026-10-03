@@ -14,11 +14,6 @@ export type CustomerDirectoryEntry = {
   is_favorite: boolean;
 };
 
-type StoredRecord = {
-  id: string;
-  data: unknown;
-};
-
 type LedgerSnapshot = {
   ledger: LedgerData;
   customers: CustomerDirectoryEntry[];
@@ -49,20 +44,6 @@ function dataRecordId(data: unknown, table: "wallets" | "sessions"): string {
     if (typeof id === "string") return id;
   }
   throw new Error(`Supabase returned a ${table} record without its application ID.`);
-}
-
-function throwOnSyncError(
-  table: "wallets" | "sessions" | "transactions" | "customers",
-  operation: "upsert" | "delete",
-  error: { message: string } | null,
-  payload: unknown,
-) {
-  if (!error) return;
-  console.error(`[Supabase sync] ${table} ${operation} failed.`, {
-    error,
-    payload,
-  });
-  throw new Error(`${table} ${operation} failed: ${error.message}`);
 }
 
 function isMissingSchemaColumn(error: { code?: string } | null): boolean {
@@ -235,264 +216,179 @@ export async function loadLedgerSnapshot(
   return { ledger: savedLedger, customers: customerDirectory };
 }
 
-async function synchronizeTable(
-  table: "wallets" | "sessions",
+type LedgerTable = "wallets" | "sessions" | "transactions" | "customers";
+
+type DataRow = {
+  id: string;
+  data: unknown;
+  session_id?: string | null;
+  created_at?: string;
+  is_favorite?: boolean | null;
+};
+
+type DataEntry = {
+  id: string;
+  data: unknown;
+};
+
+function applicationRecordId(table: LedgerTable, data: unknown): string {
+  if (table === "customers") {
+    const customer = parseCustomer(data);
+    if (customer) return customer.id;
+  } else if (table === "sessions" || table === "wallets") {
+    return dataRecordId(data, table);
+  } else if (data && typeof data === "object" && "id" in data) {
+    const id = data.id;
+    if (typeof id === "string") return id;
+  }
+  throw new Error(`Supabase returned a ${table} record without a valid ID.`);
+}
+
+async function loadRowsForMutation(
+  table: LedgerTable,
   userId: string,
-  records: StoredRecord[],
-) {
-  const { data, error } = await supabase
+): Promise<{ rows: DataRow[]; hasFavoriteColumn: boolean }> {
+  if (table === "customers") {
+    const withFavorite = await supabase
+      .from(table)
+      .select("id, data, is_favorite")
+      .eq("user_id", userId);
+    if (!isMissingSchemaColumn(withFavorite.error)) {
+      throwOnError(withFavorite.error);
+      return {
+        rows: (withFavorite.data ?? []) as DataRow[],
+        hasFavoriteColumn: true,
+      };
+    }
+    const withoutFavorite = await supabase
+      .from(table)
+      .select("id, data")
+      .eq("user_id", userId);
+    throwOnError(withoutFavorite.error);
+    return {
+      rows: (withoutFavorite.data ?? []) as DataRow[],
+      hasFavoriteColumn: false,
+    };
+  }
+
+  if (table === "transactions") {
+    const withMetadata = await supabase
+      .from(table)
+      .select("id, data, session_id, created_at")
+      .eq("user_id", userId);
+    if (!isMissingSchemaColumn(withMetadata.error)) {
+      throwOnError(withMetadata.error);
+      return {
+        rows: (withMetadata.data ?? []) as DataRow[],
+        hasFavoriteColumn: false,
+      };
+    }
+  }
+
+  const result = await supabase
     .from(table)
     .select("id, data")
     .eq("user_id", userId);
-  throwOnError(error);
-
-  const existingRecords = (data ?? []) as StoredRecord[];
-  const existingById = new Map(
-    existingRecords.map((record) => [
-      dataRecordId(record.data, table),
-      record,
-    ]),
-  );
-  const desiredById = new Map(records.map((record) => [record.id, record]));
-  const upserts: Array<{ id: string; user_id: string; data: unknown }> = [];
-  for (const record of desiredById.values()) {
-    const existing = existingById.get(record.id);
-    if (!existing) {
-      upserts.push({
-        ...record,
-        id: storageId(userId, record.id),
-        user_id: userId,
-      });
-    } else if (JSON.stringify(existing.data) !== JSON.stringify(record.data)) {
-      upserts.push({
-        ...record,
-        id: storageId(userId, record.id),
-        user_id: userId,
-      });
-    }
-  }
-
-  if (upserts.length) {
-    const result = await supabase
-      .from(table)
-      .upsert(upserts, { onConflict: "id" });
-    throwOnSyncError(table, "upsert", result.error, upserts);
-  }
-
-  const removedIds = existingRecords
-    .filter(
-      (record) => !desiredById.has(dataRecordId(record.data, table)),
-    )
-    .map((record) => record.id);
-  if (removedIds.length) {
-    const result = await supabase
-      .from(table)
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedIds);
-    throwOnSyncError(table, "delete", result.error, removedIds);
-  }
+  throwOnError(result.error);
+  return {
+    rows: (result.data ?? []) as DataRow[],
+    hasFavoriteColumn: false,
+  };
 }
 
-async function synchronizeTransactions(
+async function applyTableChanges(
+  table: LedgerTable,
   userId: string,
-  ledger: LedgerData,
-) {
-  const { data, error } = await supabase
-    .from("transactions")
-    .select("id, data, session_id, created_at")
-    .eq("user_id", userId);
-  throwOnError(error);
-
-  const existingRecords = data ?? [];
-  const existingById = new Map(
-    existingRecords.map((record) => {
-      const data =
-        record.data && typeof record.data === "object"
-          ? (record.data as Partial<LedgerTransaction>)
-          : {};
-      return [data.id ?? record.id, record] as const;
-    }),
-  );
-  const desiredById = new Map(
-    ledger.transactions.map((transaction) => [
-      transaction.id,
-      {
-        ...transaction,
-        user_id: userId,
-        session_id: transaction.session_id ?? transaction.date,
-        created_at:
-          transaction.created_at ?? `${transaction.date}T00:00:00.000Z`,
-      },
-    ]),
-  );
-  const upserts: Array<{
-    id: string;
-    user_id: string;
-    session_id: string | null;
-    created_at: string;
-    data: LedgerTransaction;
-  }> = [];
-  for (const transaction of desiredById.values()) {
-    const existing = existingById.get(transaction.id);
-    const dataIsCurrent =
-      existing && JSON.stringify(existing.data) === JSON.stringify(transaction);
-    const metadataIsCurrent =
-      existing?.session_id === transaction.session_id &&
-      existing?.created_at === transaction.created_at;
-    if (!dataIsCurrent || !metadataIsCurrent) {
-      upserts.push({
-        id: storageId(userId, transaction.id),
-        user_id: userId,
-        session_id: transaction.session_id ?? null,
-        created_at: transaction.created_at ?? new Date().toISOString(),
-        data: transaction,
-      });
+  before: DataEntry[],
+  after: DataEntry[],
+): Promise<void> {
+  const beforeById = new Map(before.map((entry) => [entry.id, entry]));
+  const afterById = new Map(after.map((entry) => [entry.id, entry]));
+  const changedIds = new Set<string>();
+  for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+    const oldEntry = beforeById.get(id);
+    const newEntry = afterById.get(id);
+    if (
+      !oldEntry ||
+      !newEntry ||
+      JSON.stringify(oldEntry.data) !== JSON.stringify(newEntry.data)
+    ) {
+      changedIds.add(id);
     }
   }
+  if (!changedIds.size) return;
 
-  if (upserts.length) {
-    const result = await supabase
-      .from("transactions")
-      .upsert(upserts, { onConflict: "id" })
-      .select("id");
-    throwOnSyncError("transactions", "upsert", result.error, upserts);
-    const confirmedIds = new Set((result.data ?? []).map((row) => row.id));
-    const unconfirmedIds = upserts
-      .filter((record) => !confirmedIds.has(record.id))
-      .map((record) => record.id);
-    if (unconfirmedIds.length) {
-      throw new Error(
-        `Supabase did not confirm transaction writes: ${unconfirmedIds.join(", ")}`,
-      );
-    }
-  }
-
-  const removedIds = existingRecords
-    .filter((record) => {
-      const data =
-        record.data && typeof record.data === "object"
-          ? (record.data as Partial<LedgerTransaction>)
-          : {};
-      return !desiredById.has(data.id ?? record.id);
-    })
-    .map((record) => record.id);
-  if (removedIds.length) {
-    const result = await supabase
-      .from("transactions")
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedIds)
-      .select("id");
-    throwOnSyncError("transactions", "delete", result.error, removedIds);
-    const deletedIds = new Set((result.data ?? []).map((row) => row.id));
-    const unconfirmedIds = removedIds.filter((id) => !deletedIds.has(id));
-    if (unconfirmedIds.length) {
-      throw new Error(
-        `Supabase did not confirm transaction deletions: ${unconfirmedIds.join(", ")}`,
-      );
-    }
-  }
-}
-
-async function synchronizeCustomers(
-  userId: string,
-  customers: CustomerDirectoryEntry[],
-) {
-  const existingWithFavorite = await supabase
-    .from("customers")
-    .select("id, data, is_favorite")
-    .eq("user_id", userId);
-  const hasFavoriteColumn = !isMissingSchemaColumn(
-    existingWithFavorite.error,
+  const { rows, hasFavoriteColumn } = await loadRowsForMutation(table, userId);
+  const remoteById = new Map(
+    rows.map((row) => [applicationRecordId(table, row.data), row]),
   );
-  let existingRows: StoredCustomer[];
-  if (!hasFavoriteColumn) {
-    const existingWithoutFavorite = await supabase
-      .from("customers")
-      .select("id, data")
-      .eq("user_id", userId);
-    throwOnError(existingWithoutFavorite.error);
-    existingRows = (existingWithoutFavorite.data ?? []) as StoredCustomer[];
-  } else {
-    throwOnError(existingWithFavorite.error);
-    existingRows = (existingWithFavorite.data ?? []) as StoredCustomer[];
-  }
 
-  const existingRecords = existingRows;
-  const existingById = new Map(
-    existingRecords.map((record) => {
-      const customer = parseCustomer(record.data);
-      if (!customer) {
-        throw new Error("Supabase returned a customer without a valid record ID.");
+  for (const id of changedIds) {
+    const oldEntry = beforeById.get(id);
+    const newEntry = afterById.get(id);
+    const existing = remoteById.get(id);
+    if (!newEntry) {
+      if (!existing) continue;
+      const result = await supabase
+        .from(table)
+        .delete()
+        .eq("user_id", userId)
+        .eq("id", existing.id)
+        .select("id")
+        .maybeSingle();
+      throwOnError(result.error);
+      if (!result.data) {
+        throw new Error(`Supabase did not delete ${table} record ${id}.`);
       }
-      return [customer.id, record] as const;
-    }),
-  );
-  const desiredById = new Map(customers.map((customer) => [customer.id, customer]));
-  const upserts: Array<{
-    id: string;
-    user_id: string;
-    data: CustomerDirectoryEntry;
-    is_favorite?: boolean;
-  }> = [];
+      continue;
+    }
 
-  for (const customer of desiredById.values()) {
-    const stored = { ...customer };
-    const current = existingById.get(customer.id);
-    if (!current) {
-      upserts.push({
-        id: storageId(userId, customer.id),
-        user_id: userId,
-        data: stored,
-        ...(hasFavoriteColumn ? { is_favorite: customer.is_favorite } : {}),
-      });
+    const databaseId = existing?.id ?? storageId(userId, id);
+    const values: Record<string, unknown> = {
+      user_id: userId,
+      id: databaseId,
+      data: newEntry.data,
+    };
+    if (table === "customers" && hasFavoriteColumn) {
+      const customer = newEntry.data as CustomerDirectoryEntry;
+      values.is_favorite = customer.is_favorite;
+    }
+    if (table === "transactions") {
+      const transaction = newEntry.data as LedgerTransaction;
+      values.session_id = transaction.session_id ?? transaction.date ?? null;
+      values.created_at =
+        transaction.created_at ?? new Date().toISOString();
+    }
+
+    if (existing) {
+      const result = await supabase
+        .from(table)
+        .update(values)
+        .eq("user_id", userId)
+        .eq("id", existing.id)
+        .select("id")
+        .maybeSingle();
+      throwOnError(result.error);
+      if (!result.data) {
+        throw new Error(`Supabase did not update ${table} record ${id}.`);
+      }
     } else {
-      const columnDiffers =
-        hasFavoriteColumn && current.is_favorite !== customer.is_favorite;
-      if (
-        JSON.stringify(current.data) !== JSON.stringify(stored) ||
-        columnDiffers
-      ) {
-        upserts.push({
-          id: storageId(userId, customer.id),
-          user_id: userId,
-          data: stored,
-          ...(hasFavoriteColumn
-            ? { is_favorite: customer.is_favorite }
-            : {}),
-        });
+      const result = await supabase.from(table).insert(values).select("id").single();
+      throwOnError(result.error);
+      if (!result.data) {
+        throw new Error(`Supabase did not insert ${table} record ${id}.`);
       }
     }
-  }
-
-  if (upserts.length) {
-    const result = await supabase
-      .from("customers")
-      .upsert(upserts, { onConflict: "id" });
-    throwOnSyncError("customers", "upsert", result.error, upserts);
-  }
-
-  const removedIds = existingRecords
-    .filter((record) => {
-      const customer = parseCustomer(record.data);
-      return !customer || !desiredById.has(customer.id);
-    })
-    .map((record) => record.id);
-  if (removedIds.length) {
-    const result = await supabase
-      .from("customers")
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedIds);
-    throwOnSyncError("customers", "delete", result.error, removedIds);
+    void oldEntry;
   }
 }
 
-export async function saveLedgerSnapshot(
+export async function commitLedgerChanges(
   user: User,
-  ledger: LedgerData,
-  customers: CustomerDirectoryEntry[],
+  beforeLedger: LedgerData,
+  nextLedger: LedgerData,
+  beforeCustomers: CustomerDirectoryEntry[],
+  nextCustomers: CustomerDirectoryEntry[],
 ) {
   const {
     data: { user: authenticatedUser },
@@ -503,21 +399,37 @@ export async function saveLedgerSnapshot(
     throw new Error("The active Supabase user changed before ledger sync.");
   }
 
-  await Promise.all([
-    synchronizeTable(
-      "wallets",
-      user.id,
-      ledger.accounts.map((account) => ({ id: account.id, data: account })),
-    ),
-    synchronizeTable(
-      "sessions",
-      user.id,
-      ledger.sessions.map((session) => ({
-        id: session.date,
-        data: session,
-      })),
-    ),
-    synchronizeTransactions(user.id, ledger),
-    synchronizeCustomers(user.id, customers),
-  ]);
+  await applyTableChanges(
+    "wallets",
+    user.id,
+    beforeLedger.accounts.map((account) => ({ id: account.id, data: account })),
+    nextLedger.accounts.map((account) => ({ id: account.id, data: account })),
+  );
+  await applyTableChanges(
+    "sessions",
+    user.id,
+    beforeLedger.sessions.map((session) => ({
+      id: session.date,
+      data: session,
+    })),
+    nextLedger.sessions.map((session) => ({ id: session.date, data: session })),
+  );
+  await applyTableChanges(
+    "customers",
+    user.id,
+    beforeCustomers.map((customer) => ({ id: customer.id, data: customer })),
+    nextCustomers.map((customer) => ({ id: customer.id, data: customer })),
+  );
+  await applyTableChanges(
+    "transactions",
+    user.id,
+    beforeLedger.transactions.map((transaction) => ({
+      id: transaction.id,
+      data: transaction,
+    })),
+    nextLedger.transactions.map((transaction) => ({
+      id: transaction.id,
+      data: transaction,
+    })),
+  );
 }

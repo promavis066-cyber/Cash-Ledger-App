@@ -54,9 +54,9 @@ import {
   AccountKind,
 } from "@/lib/ledger";
 import {
+  commitLedgerChanges,
   loadCustomerAnalyticsTransactions,
   loadLedgerSnapshot,
-  saveLedgerSnapshot,
   type CustomerAnalyticsTransaction,
   type CustomerDirectoryEntry,
 } from "@/lib/ledgerDatabase";
@@ -581,9 +581,7 @@ function LedgerDashboard({
   const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
   const [hydrated, setHydrated] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [loadAttempt, setLoadAttempt] = useState(0);
-  const [syncAttempt, setSyncAttempt] = useState(0);
-  const syncQueue = useRef<Promise<void>>(Promise.resolve());
+  const [isSaving, setIsSaving] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
   const [activeTab, setActiveTab] = useState<AppTab>("overview");
   const [adminAction, setAdminAction] = useState<AdminAction>("reopen");
@@ -659,12 +657,22 @@ function LedgerDashboard({
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [message, setMessage] = useState("");
-  const [syncError, setSyncError] = useState("");
   const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    if (!("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker
+      .getRegistrations()
+      .then((registrations) =>
+        Promise.all(registrations.map((registration) => registration.unregister())),
+      )
+      .catch((error: unknown) => {
+        console.error("Could not disable offline service-worker caching.", error);
+      });
+    if ("caches" in window) {
+      void caches.delete("cash-ledger-shell-v4").catch((error: unknown) => {
+        console.error("Could not clear the offline app cache.", error);
+      });
     }
   }, []);
 
@@ -698,21 +706,7 @@ function LedgerDashboard({
     void loadLedgerSnapshot(user)
       .then((snapshot) => {
         if (cancelled) return;
-        setLedger((current) => {
-          const transactions = new Map(
-            snapshot.ledger.transactions.map((transaction) => [
-              transaction.id,
-              transaction,
-            ]),
-          );
-          for (const transaction of current.transactions) {
-            transactions.set(transaction.id, transaction);
-          }
-          return {
-            ...snapshot.ledger,
-            transactions: Array.from(transactions.values()),
-          };
-        });
+        setLedger(snapshot.ledger);
         setCustomerDirectory(snapshot.customers);
         setHydrated(true);
       })
@@ -729,45 +723,7 @@ function LedgerDashboard({
     return () => {
       cancelled = true;
     };
-  }, [loadAttempt, user]);
-
-  useEffect(() => {
-    if (!hydrated || loadError || !isOnline) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      if (cancelled) return;
-      syncQueue.current = syncQueue.current
-        .catch(() => undefined)
-        .then(() => saveLedgerSnapshot(user, ledger, customerDirectory))
-        .then(() => {
-          if (!cancelled) {
-            setSyncError("");
-          }
-        })
-        .catch((error: unknown) => {
-          console.error("Could not save the ledger to Supabase.", error);
-          if (!cancelled) {
-            setSyncError(
-              `Cloud sync failed: ${
-                error instanceof Error ? error.message : "please try again."
-              }`,
-            );
-          }
-        });
-    }, 250);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    customerDirectory,
-    hydrated,
-    isOnline,
-    ledger,
-    loadError,
-    syncAttempt,
-    user,
-  ]);
+  }, [user]);
 
   const todaySession =
     ledger.sessions.find((session) => session.date === activeDate) ?? null;
@@ -1119,6 +1075,40 @@ function LedgerDashboard({
     window.setTimeout(() => setMessage(""), 3500);
   }
 
+  async function persistChanges(
+    nextLedger: LedgerData,
+    nextCustomers: CustomerDirectoryEntry[] = customerDirectory,
+  ): Promise<boolean> {
+    if (!isOnline) {
+      notify("Offline — Internet connection required to use the ledger.");
+      return false;
+    }
+    if (isSaving) return false;
+    setIsSaving(true);
+    try {
+      await commitLedgerChanges(
+        user,
+        ledger,
+        nextLedger,
+        customerDirectory,
+        nextCustomers,
+      );
+      setLedger(nextLedger);
+      setCustomerDirectory(nextCustomers);
+      return true;
+    } catch (error) {
+      console.error("Supabase operation failed; local state was not changed.", error);
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Supabase could not save your changes.",
+      );
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function handleSignOut() {
     try {
       await onSignOut();
@@ -1135,11 +1125,14 @@ function LedgerDashboard({
     setActiveCustomerField(null);
   }
 
-  function rememberCustomer(nameValue: string, phoneValue: string) {
+  function rememberCustomer(
+    nameValue: string,
+    phoneValue: string,
+  ): CustomerDirectoryEntry[] {
     const name = nameValue.trim();
     const phone = phoneValue.trim();
     const phoneKey = customerPhoneKey(phone);
-    if (!name && !phoneKey) return;
+    if (!name && !phoneKey) return customerDirectory;
 
     const pairKey = customerPairKey(name, phone);
     const existing = customerDirectory.find(
@@ -1158,17 +1151,16 @@ function LedgerDashboard({
         )
       : [updatedCustomer, ...customerDirectory];
 
-    setCustomerDirectory(updatedDirectory);
+    return updatedDirectory;
   }
 
-  function toggleCustomerFavorite(customerId: string) {
-    setCustomerDirectory((current) =>
-      current.map((customer) =>
-        customer.id === customerId
-          ? { ...customer, is_favorite: !customer.is_favorite }
-          : customer,
-      ),
+  async function toggleCustomerFavorite(customerId: string) {
+    const nextCustomers = customerDirectory.map((customer) =>
+      customer.id === customerId
+        ? { ...customer, is_favorite: !customer.is_favorite }
+        : customer,
     );
+    await persistChanges(ledger, nextCustomers);
   }
 
   function beginCustomerEdit(customer: CustomerDirectoryEntry) {
@@ -1183,39 +1175,35 @@ function LedgerDashboard({
     setCustomerEditPhone("");
   }
 
-  function saveCustomerEdit(customerId: string) {
+  async function saveCustomerEdit(customerId: string) {
     const name = customerEditName.trim();
     const phone = customerEditPhone.trim();
     if (!name && !phone) {
       notify("Enter a customer name or phone number.");
       return;
     }
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
     const customer = customerDirectory.find((item) => item.id === customerId);
     if (!customer) return;
     const now = new Date().toISOString();
-    setCustomerDirectory((current) =>
-      current.map((item) =>
-        item.id === customerId ? { ...item, name, phone, lastUsed: now } : item,
-      ),
+    const nextCustomers = customerDirectory.map((item) =>
+      item.id === customerId ? { ...item, name, phone, lastUsed: now } : item,
     );
-    setLedger((current) => ({
-      ...current,
-      transactions: current.transactions.map((transaction) =>
+    const nextLedger = {
+      ...ledger,
+      transactions: ledger.transactions.map((transaction) =>
         customerPairKey(transaction.customer, transaction.phone) ===
         customerPairKey(customer.name, customer.phone)
           ? { ...transaction, customer: name, phone }
           : transaction,
       ),
-    }));
-    cancelCustomerEdit();
-    notify("Customer updated; syncing changes to your cloud ledger.");
+    };
+    if (await persistChanges(nextLedger, nextCustomers)) {
+      cancelCustomerEdit();
+      notify("Customer updated.");
+    }
   }
 
-  function deleteCustomer(customer: CustomerDirectoryEntry) {
+  async function deleteCustomer(customer: CustomerDirectoryEntry) {
     if (!isOnline) {
       notify("Connect to the internet before updating your cloud ledger.");
       return;
@@ -1226,9 +1214,10 @@ function LedgerDashboard({
       )
     )
       return;
-    setCustomerDirectory((current) =>
-      current.filter((item) => item.id !== customer.id),
+    const nextCustomers = customerDirectory.filter(
+      (item) => item.id !== customer.id,
     );
+    if (!(await persistChanges(ledger, nextCustomers))) return;
     if (editingCustomerId === customer.id) cancelCustomerEdit();
     notify("Customer removed from the record book.");
   }
@@ -1362,12 +1351,8 @@ function LedgerDashboard({
     );
   }
 
-  function openSession(event: FormEvent<HTMLFormElement>) {
+  async function openSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
     const isUpdatingOpening = Boolean(todaySession);
     const selectedAccounts = (todaySession ? ledger.accounts : accounts).filter(
       (account) => openingAccountIds.includes(account.id),
@@ -1407,13 +1392,14 @@ function LedgerDashboard({
       openedAt: todaySession?.openedAt ?? new Date().toISOString(),
       closedAt: null,
     };
-    setLedger((current) => ({
-      ...current,
+    const nextLedger = {
+      ...ledger,
       sessions: [
-        ...current.sessions.filter((session) => session.date !== activeDate),
+        ...ledger.sessions.filter((session) => session.date !== activeDate),
         newSession,
       ],
-    }));
+    };
+    if (!(await persistChanges(nextLedger))) return;
     setModal(null);
     notify(
       isUpdatingOpening
@@ -1422,12 +1408,8 @@ function LedgerDashboard({
     );
   }
 
-  function closeSession(event: FormEvent<HTMLFormElement>) {
+  async function closeSession(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
     if (!todaySession || !isOpen) return;
     const groundClosing = Object.fromEntries(
       todayActiveAccounts.map((account) => [
@@ -1448,9 +1430,9 @@ function LedgerDashboard({
       (total, amount) => total + Number(amount),
       0,
     );
-    setLedger((current) => ({
-      ...current,
-      sessions: current.sessions.map((session) =>
+    const nextLedger = {
+      ...ledger,
+      sessions: ledger.sessions.map((session) =>
         session.date === activeDate
           ? {
               ...session,
@@ -1460,7 +1442,8 @@ function LedgerDashboard({
             }
           : session,
       ),
-    }));
+    };
+    if (!(await persistChanges(nextLedger))) return;
     setUnlockedDate(null);
     setModal(null);
     notify("Session closed. Reconciliation is ready.");
@@ -1595,8 +1578,11 @@ function LedgerDashboard({
           )
         : [transaction, ...ledger.transactions],
     };
-    setLedger(nextLedger);
-    rememberCustomer(transaction.customer, transaction.phone);
+    const nextCustomers = rememberCustomer(
+      transaction.customer,
+      transaction.phone,
+    );
+    if (!(await persistChanges(nextLedger, nextCustomers))) return;
     setEditingTransactionId(null);
     setAmountInput("");
     setCommissionInput("");
@@ -1605,8 +1591,8 @@ function LedgerDashboard({
     setNoteInput("");
     notify(
       wasEditing
-        ? "Transaction updated; syncing to your cloud ledger."
-        : `${kindLabel(transactionKind)} added; syncing to your cloud ledger.`,
+        ? "Transaction updated."
+        : `${kindLabel(transactionKind)} saved.`,
     );
   }
 
@@ -1640,34 +1626,28 @@ function LedgerDashboard({
     );
   }
 
-  function removeTransaction(id: string) {
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
-    setLedger((current) => ({
-      ...current,
-      transactions: current.transactions.filter(
+  async function removeTransaction(id: string) {
+    const nextLedger = {
+      ...ledger,
+      transactions: ledger.transactions.filter(
         (transaction) => transaction.id !== id,
       ),
-    }));
+    };
+    if (!(await persistChanges(nextLedger))) return;
     if (editingTransactionId === id) setEditingTransactionId(null);
-    notify("Transaction removed; syncing to your cloud ledger.");
+    notify("Transaction removed.");
   }
 
-  function submitAccount(event: FormEvent<HTMLFormElement>) {
+  async function submitAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
     const name = accountForm.name.trim();
     if (!name) return;
     const shortName = accountForm.shortName.trim() || name;
+    let nextLedger = ledger;
     if (editingAccountId) {
-      setLedger((current) => ({
-        ...current,
-        accounts: current.accounts.map((account) =>
+      nextLedger = {
+        ...ledger,
+        accounts: ledger.accounts.map((account) =>
           account.id === editingAccountId
             ? {
                 ...account,
@@ -1680,8 +1660,7 @@ function LedgerDashboard({
               }
             : account,
         ),
-      }));
-      notify("Account details updated.");
+      };
     } else {
       const id = `account-${crypto.randomUUID()}`;
       const colors = ["sky", "gold", "rose", "mint"];
@@ -1700,11 +1679,11 @@ function LedgerDashboard({
         todaySession &&
           (todaySession.closedAt === null || isUnlocked),
       );
-      setLedger((current) => ({
-        ...current,
-        accounts: [...current.accounts, newAccount],
+      nextLedger = {
+        ...ledger,
+        accounts: [...ledger.accounts, newAccount],
         sessions: activateInCurrentSession
-          ? current.sessions.map((session) =>
+          ? ledger.sessions.map((session) =>
               session.date === activeDate
                 ? {
                     ...session,
@@ -1725,14 +1704,10 @@ function LedgerDashboard({
                   }
                 : session,
             )
-          : current.sessions,
-      }));
-      notify(
-        activateInCurrentSession
-          ? "Account added and activated in today’s session."
-          : "Account added.",
-      );
+          : ledger.sessions,
+      };
     }
+    if (!(await persistChanges(nextLedger))) return;
     setEditingAccountId(null);
     setAccountForm({
       name: "",
@@ -1741,6 +1716,13 @@ function LedgerDashboard({
       accountNumber: "",
       color: "sky",
     });
+    notify(
+      editingAccountId
+        ? "Account details updated."
+        : todaySession && (todaySession.closedAt === null || isUnlocked)
+          ? "Account added and activated in today’s session."
+          : "Account added.",
+    );
   }
 
   function editAccount(account: AccountDefinition) {
@@ -1754,11 +1736,7 @@ function LedgerDashboard({
     });
   }
 
-  function deleteAccount(account: AccountDefinition) {
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
+  async function deleteAccount(account: AccountDefinition) {
     if (account.id === "cash-drawer") {
       notify("Cash drawer is required and cannot be deleted.");
       return;
@@ -1773,38 +1751,37 @@ function LedgerDashboard({
           transaction.toAccountId === account.id,
       );
     if (inUse) {
-      setLedger((current) => ({
-        ...current,
-        accounts: current.accounts.map((item) =>
+      const nextLedger = {
+        ...ledger,
+        accounts: ledger.accounts.map((item) =>
           item.id === account.id
             ? { ...item, deletedAt: new Date().toISOString() }
             : item,
         ),
-      }));
+      };
+      if (!(await persistChanges(nextLedger))) return;
       notify(
         "Account archived. Historical sessions and reports are preserved.",
       );
     } else {
-      setLedger((current) => ({
-        ...current,
-        accounts: current.accounts.filter((item) => item.id !== account.id),
-      }));
+      const nextLedger = {
+        ...ledger,
+        accounts: ledger.accounts.filter((item) => item.id !== account.id),
+      };
+      if (!(await persistChanges(nextLedger))) return;
       notify("Account deleted.");
     }
     if (editingAccountId === account.id) setEditingAccountId(null);
   }
 
-  function restoreAccount(accountId: AccountId) {
-    if (!isOnline) {
-      notify("Connect to the internet before updating your cloud ledger.");
-      return;
-    }
-    setLedger((current) => ({
-      ...current,
-      accounts: current.accounts.map((account) =>
+  async function restoreAccount(accountId: AccountId) {
+    const nextLedger = {
+      ...ledger,
+      accounts: ledger.accounts.map((account) =>
         account.id === accountId ? { ...account, deletedAt: null } : account,
       ),
-    }));
+    };
+    if (!(await persistChanges(nextLedger))) return;
     notify("Account restored for future sessions.");
   }
 
@@ -2017,43 +1994,63 @@ function LedgerDashboard({
 
   if (!hydrated) {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#f3f5f2] p-5 text-sm text-[#657269]">
-        Loading your cloud ledger…
+      <div className="min-h-screen bg-[#f3f5f2] text-sm text-[#657269]">
+        {!isOnline && (
+          <div
+            role="alert"
+            className="flex min-h-10 items-center justify-center bg-[#fff0e9] px-4 py-2 text-center text-[11px] font-medium text-[#a65335]"
+          >
+            Offline — Internet connection required to use the ledger.
+          </div>
+        )}
+        <div className="grid min-h-[calc(100vh-40px)] place-items-center p-5">
+          Loading your cloud ledger…
+        </div>
       </div>
     );
   }
 
   if (loadError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#f3f5f2] px-4 py-10">
-        <section className="w-full max-w-[440px] rounded-2xl border border-[#e3e8e2] bg-white p-6 shadow-sm sm:p-8">
-          <h1 className="m-0 text-xl font-semibold text-[#17251f]">
-            Could not load your ledger
-          </h1>
-          <p role="alert" className="mb-5 mt-3 text-sm leading-6 text-[#a65335]">
-            {loadError}
-          </p>
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setHydrated(false);
-                setLoadError("");
-                setLoadAttempt((attempt) => attempt + 1);
-              }}
-              className="h-10 flex-1 rounded-lg bg-[#173c31] px-4 text-sm font-semibold text-white hover:bg-[#245745]"
-            >
-              Try again
-            </button>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="h-10 rounded-lg border border-[#dfe5de] px-4 text-sm font-semibold text-[#526158] hover:bg-[#f6f8f5]"
-            >
-              Sign out
-            </button>
+      <main className="min-h-screen bg-[#f3f5f2]">
+        {!isOnline && (
+          <div
+            role="alert"
+            className="flex min-h-10 items-center justify-center bg-[#fff0e9] px-4 py-2 text-center text-[11px] font-medium text-[#a65335]"
+          >
+            Offline — Internet connection required to use the ledger.
           </div>
-        </section>
+        )}
+        <div className="grid min-h-[calc(100vh-40px)] place-items-center px-4 py-10">
+          <section className="w-full max-w-[440px] rounded-2xl border border-[#e3e8e2] bg-white p-6 shadow-sm sm:p-8">
+            <h1 className="m-0 text-xl font-semibold text-[#17251f]">
+              Could not load your ledger
+            </h1>
+            <p
+              role="alert"
+              className="mb-5 mt-3 text-sm leading-6 text-[#a65335]"
+            >
+              {loadError}
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={!isOnline}
+                onClick={() => window.location.reload()}
+                className="h-10 flex-1 rounded-lg bg-[#173c31] px-4 text-sm font-semibold text-white hover:bg-[#245745]"
+              >
+                Try again
+              </button>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="h-10 rounded-lg border border-[#dfe5de] px-4 text-sm font-semibold text-[#526158] hover:bg-[#f6f8f5]"
+              >
+                Sign out
+              </button>
+            </div>
+          </section>
+        </div>
       </main>
     );
   }
@@ -2152,6 +2149,14 @@ function LedgerDashboard({
       </aside>
 
       <main className="min-w-0 flex-1">
+        {!isOnline && (
+          <div
+            role="alert"
+            className="flex min-h-10 items-center justify-center bg-[#fff0e9] px-4 py-2 text-center text-[11px] font-medium text-[#a65335]"
+          >
+            Offline — Internet connection required to use the ledger.
+          </div>
+        )}
         <header className="topbar-actions sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-[#e5e9e4] bg-[#f3f5f2]/95 px-4 backdrop-blur md:px-8">
           <div className="flex items-center gap-3">
             <div>
@@ -2179,22 +2184,11 @@ function LedgerDashboard({
                 className="w-[88px] bg-transparent text-[10px] font-semibold text-[#34443b] outline-none sm:w-[104px] sm:text-xs"
               />
             </div>
-            <div
-              className={`hidden items-center gap-1.5 rounded-[7px] border px-2 py-1 text-[9px] font-medium sm:inline-flex ${isOnline ? "border-[#dfeede] bg-[#edf9ee] text-[#346b47]" : "border-[#f3dfcb] bg-[#fff8f2] text-[#a95e35]"}`}
-            >
-              <span
-                className={`size-1.5 rounded-full ${isOnline ? "bg-[#53a766]" : "bg-[#d28a4d]"}`}
-              />
-              {isOnline ? (
-                "Internet connected"
-              ) : (
-                "Offline · cloud changes paused"
-              )}
-            </div>
             {isOpen ? (
               <button
                 aria-label="Close session"
                 onClick={startClosingFlow}
+                disabled={!isOnline || isSaving}
                 className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
                 <span className="size-1.5 rounded-full bg-[#c6f36b]" />
@@ -2204,6 +2198,7 @@ function LedgerDashboard({
               <button
                 aria-label="Reopen or edit session"
                 onClick={() => requestAdminUnlock("reopen")}
+                disabled={!isOnline || isSaving}
                 className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] border border-[#dce4da] bg-white px-2 text-[10px] font-semibold text-[#5c6a61] hover:bg-[#f5f8f3] sm:px-3"
               >
                 <Pencil size={13} />
@@ -2215,6 +2210,7 @@ function LedgerDashboard({
               <button
                 aria-label="Open session"
                 onClick={startOpeningFlow}
+                disabled={!isOnline || isSaving}
                 className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#173c31] px-2.5 text-[11px] font-semibold text-white transition hover:bg-[#245745] sm:px-3.5"
               >
                 <Plus size={15} />
@@ -2234,26 +2230,13 @@ function LedgerDashboard({
           </div>
         </header>
         <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
-          {(syncError || message) && (
+          {message && (
             <div
-              role={syncError ? "alert" : "status"}
-              className={`fade-up mb-4 flex items-center gap-2 rounded-[8px] border px-3.5 py-2.5 text-[11px] ${
-                syncError
-                  ? "border-[#f0d1c5] bg-[#fff4ee] text-[#a65335]"
-                  : "border-[#d9e8c9] bg-[#eff7e6] text-[#42642d]"
-              }`}
+              role="status"
+              className="fade-up mb-4 flex items-center gap-2 rounded-[8px] border border-[#d9e8c9] bg-[#eff7e6] px-3.5 py-2.5 text-[11px] text-[#42642d]"
             >
-              {syncError ? <CircleAlert size={15} /> : <CircleCheck size={15} />}
-              <span className="min-w-0 flex-1">{syncError || message}</span>
-              {syncError && isOnline && (
-                <button
-                  type="button"
-                  onClick={() => setSyncAttempt((attempt) => attempt + 1)}
-                  className="shrink-0 font-semibold underline underline-offset-2"
-                >
-                  Retry
-                </button>
-              )}
+              <CircleCheck size={15} />
+              <span className="min-w-0 flex-1">{message}</span>
             </div>
           )}
           {activeTab === "overview" && (
@@ -2379,6 +2362,7 @@ function LedgerDashboard({
                     {!todaySession && (
                       <button
                         onClick={startOpeningFlow}
+                        disabled={!isOnline || isSaving}
                         className="flex h-8 items-center gap-1.5 rounded-[7px] bg-[#c6f36b] px-3 text-[10px] font-semibold text-[#23432f] transition hover:bg-[#b5e659]"
                       >
                         Set opening balance
@@ -2390,6 +2374,7 @@ function LedgerDashboard({
                     <div className="mt-4 grid w-full grid-cols-1 gap-2">
                       <button
                         onClick={startOpeningFlow}
+                        disabled={!isOnline || isSaving}
                         className="flex min-h-11 w-full items-center justify-center rounded-[8px] border border-[#d5e1d0] bg-[#f1f7eb] px-2 text-xs font-medium text-[#34583a] shadow-sm transition hover:bg-[#e8f2df] active:translate-y-px"
                       >
                         Edit Opening Balance
@@ -2939,7 +2924,7 @@ function LedgerDashboard({
                     Transactions are stored in your secure cloud ledger.
                   </span>
                   <button
-                    disabled={!isOpen || transferAccountError}
+                    disabled={!isOpen || transferAccountError || !isOnline || isSaving}
                     type="submit"
                     className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
                   >
@@ -3104,6 +3089,7 @@ function LedgerDashboard({
                             </button>
                             <button
                               onClick={() => removeTransaction(transaction.id)}
+                              disabled={!isOnline || isSaving}
                               aria-label={`Delete ${kindLabel(transaction.kind)} transaction`}
                               className="grid size-7 place-items-center rounded-[6px] text-[#a36e5a] hover:bg-[#fff0e9]"
                             >
@@ -3220,6 +3206,7 @@ function LedgerDashboard({
                 {isOpen && (
                   <button
                     onClick={startClosingFlow}
+                    disabled={!isOnline || isSaving}
                     className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-[7px] border border-[#dce5d9] text-[10px] font-semibold text-[#3e6248] transition hover:bg-[#f4f8ef]"
                   >
                     <Check size={14} />
@@ -3441,6 +3428,7 @@ function LedgerDashboard({
                                 onClick={() =>
                                   toggleCustomerFavorite(customer.id)
                                 }
+                                disabled={!isOnline || isSaving}
                                 className={`grid size-7 place-items-center rounded-md transition ${
                                   customer.is_favorite
                                     ? "text-[#d4a72c] hover:bg-[#fff8df]"
@@ -3471,6 +3459,7 @@ function LedgerDashboard({
                                   <>
                                     <button
                                       type="button"
+                                      disabled={!isOnline || isSaving}
                                       onClick={() =>
                                         saveCustomerEdit(customer.id)
                                       }
@@ -3503,6 +3492,7 @@ function LedgerDashboard({
                                     </button>
                                     <button
                                       type="button"
+                                      disabled={!isOnline || isSaving}
                                       onClick={() => deleteCustomer(customer)}
                                       aria-label={`Delete ${customer.name}`}
                                       title="Delete customer"
@@ -4017,6 +4007,7 @@ function LedgerDashboard({
                                   onClick={() =>
                                     removeTransaction(transaction.id)
                                   }
+                                  disabled={!isOnline || isSaving}
                                   aria-label={`Remove ${kindLabel(transaction.kind)} transaction`}
                                   title="Remove transaction"
                                   className="grid size-6 place-items-center rounded-[5px] text-[#a1aba3] hover:bg-[#fff0e9] hover:text-[#b75c3d]"
@@ -4049,14 +4040,6 @@ function LedgerDashboard({
           )}
           <footer className="mt-8 flex flex-col justify-between gap-2 border-t border-[#e3e8e2] pt-4 text-[9px] text-[#97a199] sm:flex-row">
             <span>Ledger · Daily cash operations</span>
-            <span className="flex items-center gap-1.5">
-              <span className={`size-1.5 rounded-full ${isOnline ? "bg-[#a5cf73]" : "bg-[#d88b4a]"}`} />
-              {isOnline ? (
-                "Internet connected"
-              ) : (
-                "Offline · cloud changes paused"
-              )}
-            </span>
           </footer>
         </div>
       </main>
@@ -4213,6 +4196,7 @@ function LedgerDashboard({
               </button>
               <button
                 type="submit"
+                disabled={!isOnline || isSaving}
                 className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
               >
                 <Check size={13} />
@@ -4393,6 +4377,7 @@ function LedgerDashboard({
               <div className="mt-4 flex justify-end">
                 <button
                   type="submit"
+                  disabled={!isOnline || isSaving}
                   className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                 >
                   <Plus size={13} />
@@ -4430,6 +4415,7 @@ function LedgerDashboard({
                       <button
                         type="button"
                         onClick={() => restoreAccount(account.id)}
+                        disabled={!isOnline || isSaving}
                         title="Restore account"
                         aria-label={`Restore ${account.name}`}
                         className="grid size-8 place-items-center rounded-[6px] text-[#62804f] hover:bg-[#eef5e7]"
@@ -4450,7 +4436,7 @@ function LedgerDashboard({
                         <button
                           type="button"
                           onClick={() => deleteAccount(account)}
-                          disabled={account.id === "cash-drawer"}
+                          disabled={account.id === "cash-drawer" || !isOnline || isSaving}
                           title={
                             account.id === "cash-drawer"
                               ? "Cash drawer is required"
@@ -4605,6 +4591,7 @@ function LedgerDashboard({
                   </button>
                   <button
                     type="submit"
+                    disabled={!isOnline || isSaving}
                     className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                   >
                     <Check size={13} />
@@ -4711,6 +4698,7 @@ function LedgerDashboard({
                   </button>
                   <button
                     type="submit"
+                    disabled={!isOnline || isSaving}
                     className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-4 text-[10px] font-semibold text-white hover:bg-[#245745]"
                   >
                     <Check size={13} />
