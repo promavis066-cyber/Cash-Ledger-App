@@ -55,10 +55,12 @@ import {
 } from "@/lib/ledger";
 import {
   commitLedgerChanges,
+  deleteCustomerRecord,
   loadCustomerAnalyticsTransactions,
   loadLedgerSnapshot,
   type CustomerAnalyticsTransaction,
   type CustomerDirectoryEntry,
+  updateCustomerRecord,
 } from "@/lib/ledgerDatabase";
 import { supabase } from "@/lib/supabase";
 
@@ -648,6 +650,7 @@ function LedgerDashboard({
     "name" | "phone" | null
   >(null);
   const customerFieldsRef = useRef<HTMLDivElement>(null);
+  const customerMutationsRef = useRef(new Set<string>());
   const [noteInput, setNoteInput] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionKindFilter, setSessionKindFilter] =
@@ -1047,8 +1050,21 @@ function LedgerDashboard({
         existing.lastActive = transaction.date;
       stats.set(key, existing);
     }
+    const uniqueCustomers = new Map<string, CustomerDirectoryEntry>();
+    for (const customer of customerDirectory) {
+      const key = customerPairKey(customer.name, customer.phone);
+      const existing = uniqueCustomers.get(key);
+      if (
+        !existing ||
+        (customer.is_favorite && !existing.is_favorite) ||
+        (customer.is_favorite === existing.is_favorite &&
+          customer.lastUsed > existing.lastUsed)
+      ) {
+        uniqueCustomers.set(key, customer);
+      }
+    }
     const query = customerSearch.trim().toLocaleLowerCase();
-    return customerDirectory
+    return Array.from(uniqueCustomers.values())
       .filter(
         (customer) =>
           (!favoritesOnly || customer.is_favorite) &&
@@ -1109,6 +1125,35 @@ function LedgerDashboard({
     }
   }
 
+  async function runCustomerMutation(
+    action: () => Promise<void>,
+    onSuccess: () => void,
+  ): Promise<boolean> {
+    if (!isOnline) {
+      notify("Offline — Internet connection required to use the ledger.");
+      return false;
+    }
+    if (isSaving || customerMutationsRef.current.has("active")) return false;
+    customerMutationsRef.current.add("active");
+    setIsSaving(true);
+    try {
+      await action();
+      onSuccess();
+      return true;
+    } catch (error) {
+      console.error("Supabase customer operation failed.", error);
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Supabase could not save the customer change.",
+      );
+      return false;
+    } finally {
+      customerMutationsRef.current.delete("active");
+      setIsSaving(false);
+    }
+  }
+
   async function handleSignOut() {
     try {
       await onSignOut();
@@ -1155,12 +1200,21 @@ function LedgerDashboard({
   }
 
   async function toggleCustomerFavorite(customerId: string) {
-    const nextCustomers = customerDirectory.map((customer) =>
-      customer.id === customerId
-        ? { ...customer, is_favorite: !customer.is_favorite }
-        : customer,
+    const customer = customerDirectory.find((item) => item.id === customerId);
+    if (!customer) return;
+    const updatedCustomer = {
+      ...customer,
+      is_favorite: !customer.is_favorite,
+    };
+    await runCustomerMutation(
+      () => updateCustomerRecord(user, updatedCustomer),
+      () =>
+        setCustomerDirectory((current) =>
+          current.map((item) =>
+            item.id === customerId ? updatedCustomer : item,
+          ),
+        ),
     );
-    await persistChanges(ledger, nextCustomers);
   }
 
   function beginCustomerEdit(customer: CustomerDirectoryEntry) {
@@ -1184,20 +1238,23 @@ function LedgerDashboard({
     }
     const customer = customerDirectory.find((item) => item.id === customerId);
     if (!customer) return;
-    const now = new Date().toISOString();
-    const nextCustomers = customerDirectory.map((item) =>
-      item.id === customerId ? { ...item, name, phone, lastUsed: now } : item,
-    );
-    const nextLedger = {
-      ...ledger,
-      transactions: ledger.transactions.map((transaction) =>
-        customerPairKey(transaction.customer, transaction.phone) ===
-        customerPairKey(customer.name, customer.phone)
-          ? { ...transaction, customer: name, phone }
-          : transaction,
-      ),
+    const updatedCustomer = {
+      ...customer,
+      name,
+      phone,
+      lastUsed: new Date().toISOString(),
     };
-    if (await persistChanges(nextLedger, nextCustomers)) {
+    if (
+      await runCustomerMutation(
+        () => updateCustomerRecord(user, updatedCustomer),
+        () =>
+          setCustomerDirectory((current) =>
+            current.map((item) =>
+              item.id === customerId ? updatedCustomer : item,
+            ),
+          ),
+      )
+    ) {
       cancelCustomerEdit();
       notify("Customer updated.");
     }
@@ -1214,10 +1271,16 @@ function LedgerDashboard({
       )
     )
       return;
-    const nextCustomers = customerDirectory.filter(
-      (item) => item.id !== customer.id,
-    );
-    if (!(await persistChanges(ledger, nextCustomers))) return;
+    if (
+      !(await runCustomerMutation(
+        () => deleteCustomerRecord(user, customer.id),
+        () =>
+          setCustomerDirectory((current) =>
+            current.filter((item) => item.id !== customer.id),
+          ),
+      ))
+    )
+      return;
     if (editingCustomerId === customer.id) cancelCustomerEdit();
     notify("Customer removed from the record book.");
   }
@@ -3425,14 +3488,15 @@ function LedgerDashboard({
                                     : `Add ${customer.name} to favorites`
                                 }
                                 aria-pressed={customer.is_favorite}
-                                onClick={() =>
-                                  toggleCustomerFavorite(customer.id)
-                                }
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void toggleCustomerFavorite(customer.id);
+                                }}
                                 disabled={!isOnline || isSaving}
                                 className={`grid size-7 place-items-center rounded-md transition ${
                                   customer.is_favorite
-                                    ? "text-[#d4a72c] hover:bg-[#fff8df]"
-                                    : "text-[#b1bbb2] hover:bg-[#f5f7f3] hover:text-[#d4a72c]"
+                                    ? "text-yellow-400 hover:bg-[#fff8df]"
+                                    : "text-neutral-300 hover:bg-[#f5f7f3] hover:text-yellow-400"
                                 }`}
                               >
                                 <Star

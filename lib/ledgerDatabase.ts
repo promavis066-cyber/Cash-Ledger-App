@@ -433,3 +433,89 @@ export async function commitLedgerChanges(
     })),
   );
 }
+
+async function findCustomerRow(user: User, customerId: string) {
+  const {
+    data: { user: authenticatedUser },
+    error: authError,
+  } = await supabase.auth.getUser();
+  throwOnError(authError);
+  if (!authenticatedUser || authenticatedUser.id !== user.id) {
+    throw new Error("The active Supabase user changed before customer update.");
+  }
+
+  const withFavorite = await supabase
+    .from("customers")
+    .select("id, data, is_favorite")
+    .eq("user_id", user.id);
+  let rows: DataRow[];
+  let hasFavoriteColumn = true;
+  if (isMissingSchemaColumn(withFavorite.error)) {
+    const withoutFavorite = await supabase
+      .from("customers")
+      .select("id, data")
+      .eq("user_id", user.id);
+    throwOnError(withoutFavorite.error);
+    rows = (withoutFavorite.data ?? []) as DataRow[];
+    hasFavoriteColumn = false;
+  } else {
+    throwOnError(withFavorite.error);
+    rows = (withFavorite.data ?? []) as DataRow[];
+  }
+
+  const matches = rows.filter(
+    (row) => parseCustomer(row.data)?.id === customerId,
+  );
+  const row =
+    matches.find((candidate) => candidate.id === storageId(user.id, customerId)) ??
+    matches[0];
+  if (!row) {
+    throw new Error(`Customer ${customerId} was not found in Supabase.`);
+  }
+  const customer = parseCustomer(
+    row.data,
+    "is_favorite" in row ? row.is_favorite : undefined,
+  );
+  if (!customer) {
+    throw new Error(`Supabase returned an invalid customer record ${customerId}.`);
+  }
+  return { row, customer, hasFavoriteColumn };
+}
+
+export async function updateCustomerRecord(
+  user: User,
+  customer: CustomerDirectoryEntry,
+): Promise<void> {
+  const { row, hasFavoriteColumn } = await findCustomerRow(user, customer.id);
+  const values: Record<string, unknown> = { data: customer };
+  if (hasFavoriteColumn) values.is_favorite = customer.is_favorite;
+  const result = await supabase
+    .from("customers")
+    .update(values)
+    .eq("user_id", user.id)
+    .eq("id", row.id)
+    .select("id")
+    .maybeSingle();
+  throwOnError(result.error);
+  if (!result.data) {
+    throw new Error(`Supabase did not update customer ${customer.id}.`);
+  }
+}
+
+export async function deleteCustomerRecord(
+  user: User,
+  customerId: string,
+): Promise<void> {
+  const { row } = await findCustomerRow(user, customerId);
+  const result = await supabase
+    .from("customers")
+    .delete()
+    .eq("user_id", user.id)
+    .eq("id", row.id)
+    .select("id")
+    .maybeSingle();
+  throwOnError(result.error);
+  if (!result.data) {
+    throw new Error(`Supabase did not delete customer ${customerId}.`);
+  }
+}
