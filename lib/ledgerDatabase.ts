@@ -34,6 +34,15 @@ function throwOnError(error: { message: string } | null) {
   if (error) throw new Error(error.message);
 }
 
+function validTimestamp(...values: unknown[]): string | undefined {
+  return values.find(
+    (value): value is string =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      Number.isFinite(new Date(value).getTime()),
+  );
+}
+
 function storageId(userId: string, recordId: string) {
   return `${userId}:${recordId}`;
 }
@@ -127,6 +136,7 @@ export async function loadCustomerAnalyticsTransactions(
       "customer_name, phone_number, kind, amount, commission, transaction_date",
     )
     .eq("user_id", user.id);
+  query = query.order("created_at", { ascending: true });
   if (startDate) query = query.gte("transaction_date", startDate);
   if (endDate) query = query.lte("transaction_date", endDate);
   const result = await query;
@@ -135,7 +145,8 @@ export async function loadCustomerAnalyticsTransactions(
     const fallback = await supabase
       .from("transactions")
       .select("data")
-      .eq("user_id", user.id);
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true });
     throwOnError(fallback.error);
     return (fallback.data ?? [])
       .map((record) => parseAnalyticsTransaction(record.data))
@@ -166,13 +177,15 @@ export async function loadLedgerSnapshot(
     supabase
       .from("transactions")
       .select("id, data, session_id, created_at, updated_at")
-      .eq("user_id", user.id),
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true }),
   ]);
   const transactions = isMissingSchemaColumn(transactionsWithEditTime.error)
     ? await supabase
         .from("transactions")
         .select("id, data, session_id, created_at")
         .eq("user_id", user.id)
+        .order("created_at", { ascending: true })
     : transactionsWithEditTime;
 
   throwOnError(wallets.error);
@@ -209,17 +222,38 @@ export async function loadLedgerSnapshot(
     updated_at?: string | null;
   }>;
   savedLedger.transactions = savedLedger.transactions.map((transaction) => {
-    const stored = transactionRows.find((row) => row.id === transaction.id);
+    const stored = transactionRows.find((row) => {
+      const data =
+        row.data && typeof row.data === "object"
+          ? (row.data as Partial<LedgerTransaction>)
+          : undefined;
+      return data?.id === transaction.id || row.id === transaction.id;
+    });
     const data =
       stored?.data && typeof stored.data === "object"
-        ? (stored.data as Partial<LedgerTransaction>)
+        ? (stored.data as Partial<
+            LedgerTransaction & {
+              createdAt?: string;
+              recorded_at?: string;
+              timestamp?: string;
+            }
+          >)
         : {};
     return {
       ...transaction,
       user_id: user.id,
       session_id: stored?.session_id ?? data.session_id ?? transaction.date,
-      created_at: stored?.created_at ?? data.created_at,
-      updated_at: stored?.updated_at ?? data.updated_at ?? null,
+      created_at: validTimestamp(
+        stored?.created_at,
+        data.created_at,
+        data.createdAt,
+        data.recorded_at,
+        data.timestamp,
+        transaction.created_at,
+      ),
+      updated_at:
+        validTimestamp(stored?.updated_at, data.updated_at, transaction.updated_at) ??
+        null,
     };
   });
   const customerDirectory = customerRows
@@ -300,7 +334,8 @@ async function loadRowsForMutation(
     const withMetadata = await supabase
       .from(table)
       .select("id, data, session_id, created_at, updated_at")
-      .eq("user_id", userId);
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
     if (!isMissingSchemaColumn(withMetadata.error)) {
       throwOnError(withMetadata.error);
       return {
@@ -312,7 +347,8 @@ async function loadRowsForMutation(
     const withoutUpdatedAt = await supabase
       .from(table)
       .select("id, data, session_id, created_at")
-      .eq("user_id", userId);
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
     throwOnError(withoutUpdatedAt.error);
     return {
       rows: (withoutUpdatedAt.data ?? []) as DataRow[],

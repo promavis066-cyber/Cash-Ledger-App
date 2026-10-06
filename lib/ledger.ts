@@ -36,6 +36,9 @@ export interface LedgerTransaction {
   user_id?: string;
   session_id?: string | null;
   created_at?: string;
+  createdAt?: string;
+  recorded_at?: string;
+  timestamp?: string;
   updated_at?: string | null;
   date: string;
   time: string;
@@ -137,6 +140,15 @@ export const emptyLedger = (): LedgerData => ({
   transactions: [],
 });
 
+function firstValidTimestamp(...values: unknown[]): string | undefined {
+  return values.find(
+    (value): value is string =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      Number.isFinite(new Date(value).getTime()),
+  );
+}
+
 export function normalizeLedger(value: unknown): LedgerData {
   if (!value || typeof value !== "object") return emptyLedger();
   const saved = value as Partial<LedgerData>;
@@ -147,6 +159,12 @@ export function normalizeLedger(value: unknown): LedgerData {
   const transactions = Array.isArray(saved.transactions)
     ? saved.transactions.map((transaction) => ({
         ...transaction,
+        created_at: firstValidTimestamp(
+          transaction.created_at,
+          transaction.createdAt,
+          transaction.recorded_at,
+          transaction.timestamp,
+        ),
         commissionAccountId: transaction.commissionAccountId ?? "cash-drawer",
       }))
     : [];

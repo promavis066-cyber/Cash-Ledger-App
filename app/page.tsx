@@ -382,6 +382,17 @@ function formatTransactionTimestamp(timestamp?: string | null) {
   }).format(parsed);
 }
 
+function transactionCreatedAt(transaction: LedgerTransaction) {
+  const timestamp =
+    transaction.created_at ||
+    transaction.createdAt ||
+    transaction.recorded_at ||
+    transaction.timestamp;
+  return timestamp && Number.isFinite(new Date(timestamp).getTime())
+    ? timestamp
+    : undefined;
+}
+
 function accountName(accountList: AccountDefinition[], id: AccountId | null) {
   return (
     accountList.find((account) => account.id === id)?.shortName ??
@@ -775,8 +786,8 @@ function LedgerDashboard({
         (transaction) => transaction.date === activeDate,
       ).sort(
           (left, right) =>
-            new Date(left.created_at ?? 0).getTime() -
-            new Date(right.created_at ?? 0).getTime(),
+            new Date(transactionCreatedAt(left) ?? 0).getTime() -
+            new Date(transactionCreatedAt(right) ?? 0).getTime(),
       ),
     [ledger.transactions, activeDate],
   );
@@ -1638,11 +1649,14 @@ function LedgerDashboard({
     const existingTransaction = editingTransactionId
       ? ledger.transactions.find((item) => item.id === editingTransactionId)
       : undefined;
+    const originalCreatedAt = existingTransaction
+      ? transactionCreatedAt(existingTransaction)
+      : undefined;
     const transaction: LedgerTransaction = {
       id: existingTransaction?.id ?? crypto.randomUUID(),
       user_id: authenticatedUser.id,
       session_id: existingTransaction?.session_id ?? todaySession?.date ?? null,
-      created_at: existingTransaction?.created_at ?? now.toISOString(),
+      created_at: originalCreatedAt ?? now.toISOString(),
       updated_at: existingTransaction ? now.toISOString() : null,
       date: activeDate,
       time:
@@ -1667,7 +1681,11 @@ function LedgerDashboard({
       transactions: editingTransactionId
         ? ledger.transactions.map((item) =>
             item.id === editingTransactionId
-              ? { ...transaction, id: editingTransactionId }
+              ? {
+                  ...transaction,
+                  id: editingTransactionId,
+                  created_at: item.created_at ?? transaction.created_at,
+                }
               : item,
           )
         : [transaction, ...ledger.transactions],
@@ -3155,7 +3173,9 @@ function LedgerDashboard({
                           </div>
                           <p className="mb-0 mt-1 text-[8px] text-[#9ba59d]">
                             Recorded:{" "}
-                            {formatTransactionTimestamp(transaction.created_at)}
+                            {formatTransactionTimestamp(
+                              transactionCreatedAt(transaction),
+                            )}
                           </p>
                           {transaction.updated_at &&
                             transaction.updated_at !== transaction.created_at && (
@@ -4066,7 +4086,9 @@ function LedgerDashboard({
                             )}
                             <span className="mt-0.5 block text-[8px] text-[#9ba59d]">
                               Recorded:{" "}
-                              {formatTransactionTimestamp(transaction.created_at)}
+                              {formatTransactionTimestamp(
+                                transactionCreatedAt(transaction),
+                              )}
                             </span>
                             {transaction.updated_at &&
                               transaction.updated_at !==
