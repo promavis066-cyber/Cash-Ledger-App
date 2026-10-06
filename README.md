@@ -9,9 +9,10 @@ wallets, sessions, transactions, and customer directory in Supabase.
    `.env.local`.
 2. Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL
    Editor to create the tables, enable per-user row-level security, and add
-   customer favorites, transaction session/timestamp metadata, globally unique
-   user-prefixed record IDs for upsert conflicts, and indexed transaction
-   customer/date fields. Row-level security continues to scope data by user.
+   customer favorites, transaction session/creation/edit timestamps, globally
+   unique user-prefixed record IDs for upsert conflicts, and indexed
+   transaction customer/date fields. Row-level security continues to scope
+   data by user.
    Re-run it after deploying schema updates to migrate existing tables.
 3. Enable Email authentication in the Supabase project's Authentication
    settings. If email confirmation is enabled, new users must confirm their

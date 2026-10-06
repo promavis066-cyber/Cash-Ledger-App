@@ -36,6 +36,7 @@ export interface LedgerTransaction {
   user_id?: string;
   session_id?: string | null;
   created_at?: string;
+  updated_at?: string | null;
   date: string;
   time: string;
   kind: TransactionKind;

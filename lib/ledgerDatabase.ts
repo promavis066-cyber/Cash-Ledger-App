@@ -160,14 +160,20 @@ export async function loadCustomerAnalyticsTransactions(
 export async function loadLedgerSnapshot(
   user: User,
 ): Promise<LedgerSnapshot> {
-  const [wallets, sessions, transactions] = await Promise.all([
+  const [wallets, sessions, transactionsWithEditTime] = await Promise.all([
     supabase.from("wallets").select("id, data").eq("user_id", user.id),
     supabase.from("sessions").select("id, data").eq("user_id", user.id),
     supabase
       .from("transactions")
-      .select("id, data, session_id, created_at")
+      .select("id, data, session_id, created_at, updated_at")
       .eq("user_id", user.id),
   ]);
+  const transactions = isMissingSchemaColumn(transactionsWithEditTime.error)
+    ? await supabase
+        .from("transactions")
+        .select("id, data, session_id, created_at")
+        .eq("user_id", user.id)
+    : transactionsWithEditTime;
 
   throwOnError(wallets.error);
   throwOnError(sessions.error);
@@ -195,7 +201,13 @@ export async function loadLedgerSnapshot(
     sessions: (sessions.data ?? []).map((record) => record.data),
     transactions: (transactions.data ?? []).map((record) => record.data),
   });
-  const transactionRows = transactions.data ?? [];
+  const transactionRows = (transactions.data ?? []) as Array<{
+    id: string;
+    data: unknown;
+    session_id?: string | null;
+    created_at?: string;
+    updated_at?: string | null;
+  }>;
   savedLedger.transactions = savedLedger.transactions.map((transaction) => {
     const stored = transactionRows.find((row) => row.id === transaction.id);
     const data =
@@ -207,6 +219,7 @@ export async function loadLedgerSnapshot(
       user_id: user.id,
       session_id: stored?.session_id ?? data.session_id ?? transaction.date,
       created_at: stored?.created_at ?? data.created_at,
+      updated_at: stored?.updated_at ?? data.updated_at ?? null,
     };
   });
   const customerDirectory = customerRows
@@ -228,6 +241,7 @@ type DataRow = {
   data: unknown;
   session_id?: string | null;
   created_at?: string;
+  updated_at?: string | null;
   is_favorite?: boolean | null;
 };
 
@@ -252,7 +266,11 @@ function applicationRecordId(table: LedgerTable, data: unknown): string {
 async function loadRowsForMutation(
   table: LedgerTable,
   userId: string,
-): Promise<{ rows: DataRow[]; hasFavoriteColumn: boolean }> {
+): Promise<{
+  rows: DataRow[];
+  hasFavoriteColumn: boolean;
+  hasUpdatedAtColumn: boolean;
+}> {
   if (table === "customers") {
     const withFavorite = await supabase
       .from(table)
@@ -263,6 +281,7 @@ async function loadRowsForMutation(
       return {
         rows: (withFavorite.data ?? []) as DataRow[],
         hasFavoriteColumn: true,
+        hasUpdatedAtColumn: false,
       };
     }
     const withoutFavorite = await supabase
@@ -273,21 +292,33 @@ async function loadRowsForMutation(
     return {
       rows: (withoutFavorite.data ?? []) as DataRow[],
       hasFavoriteColumn: false,
+      hasUpdatedAtColumn: false,
     };
   }
 
   if (table === "transactions") {
     const withMetadata = await supabase
       .from(table)
-      .select("id, data, session_id, created_at")
+      .select("id, data, session_id, created_at, updated_at")
       .eq("user_id", userId);
     if (!isMissingSchemaColumn(withMetadata.error)) {
       throwOnError(withMetadata.error);
       return {
         rows: (withMetadata.data ?? []) as DataRow[],
         hasFavoriteColumn: false,
+        hasUpdatedAtColumn: true,
       };
     }
+    const withoutUpdatedAt = await supabase
+      .from(table)
+      .select("id, data, session_id, created_at")
+      .eq("user_id", userId);
+    throwOnError(withoutUpdatedAt.error);
+    return {
+      rows: (withoutUpdatedAt.data ?? []) as DataRow[],
+      hasFavoriteColumn: false,
+      hasUpdatedAtColumn: false,
+    };
   }
 
   const result = await supabase
@@ -298,6 +329,7 @@ async function loadRowsForMutation(
   return {
     rows: (result.data ?? []) as DataRow[],
     hasFavoriteColumn: false,
+    hasUpdatedAtColumn: false,
   };
 }
 
@@ -323,7 +355,8 @@ async function applyTableChanges(
   }
   if (!changedIds.size) return;
 
-  const { rows, hasFavoriteColumn } = await loadRowsForMutation(table, userId);
+  const { rows, hasFavoriteColumn, hasUpdatedAtColumn } =
+    await loadRowsForMutation(table, userId);
   const remoteById = new Map(
     rows.map((row) => [applicationRecordId(table, row.data), row]),
   );
@@ -380,11 +413,15 @@ async function applyTableChanges(
     if (table === "transactions") {
       const transaction = newEntry.data as LedgerTransaction;
       values.session_id = transaction.session_id ?? transaction.date ?? null;
-      values.created_at =
-        transaction.created_at ?? new Date().toISOString();
     }
 
     if (existing) {
+      if (table === "transactions") {
+        const transaction = newEntry.data as LedgerTransaction;
+        if (hasUpdatedAtColumn) {
+          values.updated_at = transaction.updated_at ?? null;
+        }
+      }
       const result = await supabase
         .from(table)
         .update(values)
@@ -397,6 +434,13 @@ async function applyTableChanges(
         throw new Error(`Supabase did not update ${table} record ${id}.`);
       }
     } else {
+      if (table === "transactions") {
+        const transaction = newEntry.data as LedgerTransaction;
+        values.created_at = transaction.created_at ?? new Date().toISOString();
+        if (hasUpdatedAtColumn) {
+          values.updated_at = transaction.updated_at ?? null;
+        }
+      }
       const result = await supabase.from(table).insert(values).select("id").single();
       throwOnError(result.error);
       if (!result.data) {

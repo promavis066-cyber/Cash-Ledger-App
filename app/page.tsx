@@ -369,6 +369,19 @@ function formatDate(
   );
 }
 
+function formatTransactionTimestamp(timestamp?: string | null) {
+  if (!timestamp) return "Unknown";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
 function accountName(accountList: AccountDefinition[], id: AccountId | null) {
   return (
     accountList.find((account) => account.id === id)?.shortName ??
@@ -760,6 +773,10 @@ function LedgerDashboard({
     () =>
       ledger.transactions.filter(
         (transaction) => transaction.date === activeDate,
+      ).sort(
+          (left, right) =>
+            new Date(left.created_at ?? 0).getTime() -
+            new Date(right.created_at ?? 0).getTime(),
       ),
     [ledger.transactions, activeDate],
   );
@@ -1626,6 +1643,7 @@ function LedgerDashboard({
       user_id: authenticatedUser.id,
       session_id: existingTransaction?.session_id ?? todaySession?.date ?? null,
       created_at: existingTransaction?.created_at ?? now.toISOString(),
+      updated_at: existingTransaction ? now.toISOString() : null,
       date: activeDate,
       time:
         existingTransaction?.time ??
@@ -3135,6 +3153,20 @@ function LedgerDashboard({
                               showFlowSigns
                             />
                           </div>
+                          <p className="mb-0 mt-1 text-[8px] text-[#9ba59d]">
+                            Recorded:{" "}
+                            {formatTransactionTimestamp(transaction.created_at)}
+                          </p>
+                          {transaction.updated_at &&
+                            transaction.updated_at !== transaction.created_at && (
+                              <span
+                                className="mt-0.5 inline-block rounded bg-[#f3f5f2] px-1.5 py-0.5 text-[8px] text-[#748078]"
+                                title={`Last modified ${formatTransactionTimestamp(transaction.updated_at)}`}
+                              >
+                                Edited:{" "}
+                                {formatTransactionTimestamp(transaction.updated_at)}
+                              </span>
+                            )}
                         </div>
                         <div className="text-right">
                           <p className="number-font m-0 text-[10px] font-semibold">
@@ -4032,6 +4064,23 @@ function LedgerDashboard({
                                 {transaction.phone}
                               </span>
                             )}
+                            <span className="mt-0.5 block text-[8px] text-[#9ba59d]">
+                              Recorded:{" "}
+                              {formatTransactionTimestamp(transaction.created_at)}
+                            </span>
+                            {transaction.updated_at &&
+                              transaction.updated_at !==
+                                transaction.created_at && (
+                                <span
+                                  className="mt-0.5 inline-block rounded bg-[#f3f5f2] px-1.5 py-0.5 text-[8px] text-[#748078]"
+                                  title={`Last modified ${formatTransactionTimestamp(transaction.updated_at)}`}
+                                >
+                                  Edited:{" "}
+                                  {formatTransactionTimestamp(
+                                    transaction.updated_at,
+                                  )}
+                                </span>
+                              )}
                             {transaction.note && (
                               <span className="mt-0.5 block max-w-[145px] truncate text-[8px] text-[#9ba59d]">
                                 {transaction.note}

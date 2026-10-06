@@ -28,7 +28,8 @@ create table if not exists public.customers (
 
 alter table public.transactions
   add column if not exists session_id text,
-  add column if not exists created_at timestamptz not null default now();
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz;
 
 do $$
 declare
