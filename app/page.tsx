@@ -850,6 +850,14 @@ function LedgerDashboard({
     todaySession?.activeAccountIds ?? [],
   );
   const openingBalance = openingBalances["cash-drawer"] ?? 0;
+  const digitalOpeningBalance = Object.entries(openingBalances)
+    .filter(([accountId]) => accountId !== "cash-drawer")
+    .reduce((total, [, amount]) => total + Number(amount || 0), 0);
+  const totalOpeningBalance = openingBalance + digitalOpeningBalance;
+  const todayCommission = todayTransactions.reduce(
+    (total, transaction) => total + Number(transaction.commission || 0),
+    0,
+  );
   const systemClosing =
     todaySession?.activeAccountIds.reduce(
       (total, id) => total + (accountBalances[id] ?? 0),
@@ -2378,58 +2386,50 @@ function LedgerDashboard({
               </section>
 
               <section className="mb-5 grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
-                <div className="relative min-h-[212px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
+                <div className="relative min-h-[250px] overflow-hidden rounded-[11px] bg-[#173c31] p-5 text-white md:p-6">
                   <div className="pointer-events-none absolute -right-8 -top-14 size-60 rounded-full border border-white/8" />
                   <div className="pointer-events-none absolute -right-1 -top-7 size-44 rounded-full border border-white/8" />
-                  <div className="relative flex h-full flex-col justify-between gap-8">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="mb-2 text-[10px] font-medium uppercase tracking-[1.7px] text-white/55">
-                          Cash position · MMK
-                        </p>
-                        <p className="number-font m-0 text-[31px] font-semibold tracking-[-1px] md:text-[38px]">
-                          {formatMMK(balances["cash-drawer"])}
-                        </p>
-                        <p className="mb-0 mt-2 text-[10px] text-white/55">
-                          {isOpen
-                            ? "Live drawer balance"
-                            : isClosed
-                              ? "Final drawer balance"
-                              : "Opening balance not set"}
-                        </p>
-                      </div>
-                      <span className="grid size-10 shrink-0 place-items-center rounded-[9px] bg-[#c6f36b] text-[#173c31]">
-                        <WalletCards size={19} />
-                      </span>
+                  <div className="relative flex h-full flex-col justify-between gap-6">
+                    <div className="py-2 text-center">
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-[1.7px] text-white/60">
+                        Today commission · MMK
+                      </p>
+                      <p className="number-font m-0 text-5xl font-bold tracking-tight text-white md:text-[52px]">
+                        {formatMMK(todayCommission)}
+                      </p>
+                      <p className="mb-0 mt-2 text-[10px] text-white/60">
+                        Total commission earned across all channels today
+                      </p>
                     </div>
-                    <div className="flex flex-wrap items-end justify-between gap-4 border-t border-white/15 pt-3.5">
-                      <div className="flex gap-6">
-                        <div>
-                          <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
-                            Opening
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-t border-white/15 pt-4 sm:grid-cols-4">
+                      {[
+                        ["Cash opening", openingBalance],
+                        ["Digital opening", digitalOpeningBalance],
+                        ["Total opening", totalOpeningBalance],
+                      ].map(([label, amount]) => (
+                        <div key={label} className="min-w-0">
+                          <p className="m-0 text-[8px] font-medium uppercase tracking-[1px] text-white/50">
+                            {label}
                           </p>
-                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
-                            {formatMMK(openingBalance)}{" "}
-                            <span className="text-[9px] text-white/45">
+                          <p className="number-font mb-0 mt-1 truncate text-[12px] font-semibold text-white sm:text-[13px]">
+                            {formatMMK(Number(amount))}{" "}
+                            <span className="text-[8px] font-normal text-white/45">
                               MMK
                             </span>
                           </p>
                         </div>
-                        <div>
-                          <p className="m-0 text-[9px] uppercase tracking-[1px] text-white/50">
-                            System close
-                          </p>
-                          <p className="number-font mb-0 mt-1 text-[12px] font-medium">
-                            {formatMMK(systemClosing)}{" "}
-                            <span className="text-[9px] text-white/45">
-                              MMK
-                            </span>
-                          </p>
-                        </div>
+                      ))}
+                      <div className="min-w-0">
+                        <p className="m-0 text-[8px] font-medium uppercase tracking-[1px] text-white/50">
+                          Transactions
+                        </p>
+                        <p className="number-font mb-0 mt-1 truncate text-[12px] font-semibold text-white sm:text-[13px]">
+                          {todayTransactions.length}{" "}
+                          <span className="text-[8px] font-normal text-white/55">
+                            records
+                          </span>
+                        </p>
                       </div>
-                      <span className="text-[9px] text-white/50">
-                        Updated just now
-                      </span>
                     </div>
                   </div>
                 </div>
