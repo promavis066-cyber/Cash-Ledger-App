@@ -882,6 +882,34 @@ function LedgerDashboard({
     todaySession && (todaySession.closedAt === null || isUnlocked),
   );
   const isClosed = Boolean(todaySession?.closedAt && !isUnlocked);
+  const closingGroundBalances = todaySession?.accountBalances.groundClosing ?? {};
+  const closingCashTotal = Number(closingGroundBalances["cash-drawer"] ?? 0);
+  const closingWalletTotal = Object.entries(closingGroundBalances)
+    .filter(([accountId]) => accountId !== "cash-drawer")
+    .reduce((total, [, amount]) => total + Number(amount ?? 0), 0);
+  const totalClosingBalance = closingCashTotal + closingWalletTotal;
+  const sessionClosingDifference =
+    todaySession?.closingBalance == null
+      ? null
+      : totalClosingBalance - Number(todaySession.closingBalance ?? 0);
+  const closingCommissionBreakdown = Array.from(
+    todayTransactions.reduce((map, transaction) => {
+      const channelId = transaction.commissionAccountId ?? "cash-drawer";
+      map.set(channelId, (map.get(channelId) ?? 0) + Number(transaction.commission || 0));
+      return map;
+    }, new Map<AccountId, number>()),
+  )
+    .filter(([, total]) => total > 0)
+    .map(([accountId, total]) => ({
+      accountId,
+      accountName: accountName(ledger.accounts, accountId),
+      amount: total,
+    }))
+    .sort((left, right) => right.amount - left.amount);
+  const totalCommissionByChannel = closingCommissionBreakdown.reduce(
+    (total, item) => total + item.amount,
+    0,
+  );
   const transactionAccounts = isOpen
     ? todayActiveAccounts.filter((account) => !account.deletedAt)
     : accounts;
@@ -2495,6 +2523,127 @@ function LedgerDashboard({
                   )}
                 </div>
               </section>
+
+              {isClosed && todaySession && (
+                <section className="mb-6 overflow-hidden rounded-[11px] border border-[#e4e8e3] bg-white p-5 shadow-[0_12px_30px_rgba(18,34,27,0.04)] md:p-6">
+                  <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="m-0 text-[10px] font-semibold uppercase tracking-[1.6px] text-[#7d8d88]">
+                        Session closing reconciliation summary
+                      </p>
+                      <h3 className="m-0 mt-1 text-[18px] font-semibold tracking-[-0.35px] text-[#1d2e28]">
+                        SESSION CLOSING RECONCILIATION SUMMARY
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2 rounded-full border border-[#dfe7e2] bg-[#f4f7f4] px-2.5 py-1.5 text-[10px] font-medium text-[#52625b]">
+                      <span className="size-1.5 rounded-full bg-[#76aa42]" />
+                      {todaySession.closedAt
+                        ? new Date(todaySession.closedAt).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "Session closed"}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="rounded-[10px] border border-[#e7ece7] bg-[#f7faf7] p-3.5">
+                      <p className="m-0 text-[8px] font-semibold uppercase tracking-[1px] text-[#7d8d88]">
+                        Closing cash
+                      </p>
+                      <p className="number-font mb-0 mt-2 text-[17px] font-semibold tracking-[-0.5px] text-[#1b2b24]">
+                        {formatMMK(closingCashTotal)}
+                        <span className="ml-1 text-[8px] font-medium text-[#8a978d]">
+                          MMK
+                        </span>
+                      </p>
+                    </div>
+                    <div className="rounded-[10px] border border-[#e7ece7] bg-[#f7faf7] p-3.5">
+                      <p className="m-0 text-[8px] font-semibold uppercase tracking-[1px] text-[#7d8d88]">
+                        Digital wallets total
+                      </p>
+                      <p className="number-font mb-0 mt-2 text-[17px] font-semibold tracking-[-0.5px] text-[#1b2b24]">
+                        {formatMMK(closingWalletTotal)}
+                        <span className="ml-1 text-[8px] font-medium text-[#8a978d]">
+                          MMK
+                        </span>
+                      </p>
+                    </div>
+                    <div className="rounded-[10px] border border-[#dfeadf] bg-[#ecf7e8] p-3.5">
+                      <p className="m-0 text-[8px] font-semibold uppercase tracking-[1px] text-[#58715d]">
+                        Total closing (cash + wallets)
+                      </p>
+                      <p className="number-font mb-0 mt-2 text-[17px] font-semibold tracking-[-0.5px] text-[#18352d]">
+                        {formatMMK(totalClosingBalance)}
+                        <span className="ml-1 text-[8px] font-medium text-[#58715d]">
+                          MMK
+                        </span>
+                      </p>
+                    </div>
+                    <div className="rounded-[10px] border border-[#e7ece7] bg-[#f7faf7] p-3.5">
+                      <p className="m-0 text-[8px] font-semibold uppercase tracking-[1px] text-[#7d8d88]">
+                        Balance status
+                      </p>
+                      <p className="mb-0 mt-2 text-[12px] font-semibold text-[#1d2e28]">
+                        {sessionClosingDifference == null
+                          ? "Awaiting close"
+                          : Math.abs(sessionClosingDifference) === 0
+                            ? "Balanced"
+                            : `${sessionClosingDifference > 0 ? "+" : "-"}${formatMMK(Math.abs(sessionClosingDifference))} MMK`}
+                      </p>
+                      <p className="mb-0 mt-1 text-[8px] text-[#8b968d]">
+                        {sessionClosingDifference == null
+                          ? "Closing totals not yet verified"
+                          : Math.abs(sessionClosingDifference) === 0
+                            ? "System expected and counted totals match"
+                            : "Difference from expected close"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 border-t border-[#edf1ee] pt-5">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h4 className="m-0 text-[11px] font-semibold uppercase tracking-[1.4px] text-[#7a8d88]">
+                        Commission breakdown by channel
+                      </h4>
+                    </div>
+
+                    <div className="space-y-2">
+                      {closingCommissionBreakdown.length ? (
+                        closingCommissionBreakdown.map((item) => (
+                          <div
+                            key={item.accountId}
+                            className="flex items-center justify-between gap-3 rounded-[8px] border border-[#edf1ee] bg-[#fbfcfb] px-3 py-2"
+                          >
+                            <span className="text-[12px] font-medium text-[#24372f]">
+                              {item.accountName}
+                            </span>
+                            <span className="number-font text-[12px] font-semibold text-[#1d2e28]">
+                              {formatMMK(item.amount)} MMK
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-[8px] border border-dashed border-[#dfe6df] bg-[#fafcfb] px-3 py-3 text-[11px] text-[#7d8d88]">
+                          No commission recorded in the closed session.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-between gap-3 rounded-[8px] bg-[#172f2b] px-3 py-2.5 text-white">
+                      <span className="text-[10px] font-semibold uppercase tracking-[1.2px] text-white/70">
+                        Total commission earned
+                      </span>
+                      <span className="number-font text-[15px] font-semibold tracking-[-0.3px]">
+                        {formatMMK(totalCommissionByChannel)} MMK
+                      </span>
+                    </div>
+                  </div>
+                </section>
+              )}
 
               <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {[
