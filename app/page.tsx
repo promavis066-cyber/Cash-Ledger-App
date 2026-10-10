@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   FileText,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Pencil,
   Plus,
@@ -627,6 +628,10 @@ function LedgerDashboard({
   const [hydrated, setHydrated] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [transactionSubmitting, setTransactionSubmitting] = useState(false);
+  const [messageTone, setMessageTone] = useState<"success" | "error">(
+    "success",
+  );
   const [modal, setModal] = useState<ModalKind>(null);
   const [activeTab, setActiveTab] = useState<AppTab>("overview");
   const [adminAction, setAdminAction] = useState<AdminAction>("reopen");
@@ -1163,9 +1168,10 @@ function LedgerDashboard({
       );
   }, [customerDirectory, customerSearch, favoritesOnly, ledger.transactions]);
 
-  function notify(text: string) {
+  function notify(text: string, tone: "success" | "error" = "success") {
     setMessage(text);
-    window.setTimeout(() => setMessage(""), 3500);
+    setMessageTone(tone);
+    window.setTimeout(() => setMessage(""), 2800);
   }
 
   async function persistChanges(
@@ -1195,6 +1201,7 @@ function LedgerDashboard({
         error instanceof Error
           ? error.message
           : "Supabase could not save your changes.",
+        "error",
       );
       return false;
     } finally {
@@ -1591,6 +1598,25 @@ function LedgerDashboard({
 
   async function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (transactionSubmitting || isSaving) return;
+    setTransactionSubmitting(true);
+    try {
+      await submitTransaction(event);
+    } catch (error) {
+      console.error("Could not save the transaction to Supabase.", error);
+      notify(
+        error instanceof Error
+          ? `Could not save transaction: ${error.message}`
+          : "Could not save transaction. Please try again.",
+        "error",
+      );
+    } finally {
+      setTransactionSubmitting(false);
+    }
+  }
+
+  async function submitTransaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     if (!isOnline) {
       notify("Connect to the internet before updating your cloud ledger.");
       return;
@@ -1678,7 +1704,7 @@ function LedgerDashboard({
         authError,
         expectedUserId: user.id,
       });
-      notify(`Could not save transaction: ${errorMessage}`);
+      notify(`Could not save transaction: ${errorMessage}`, "error");
       return;
     }
     const now = new Date();
@@ -1739,8 +1765,8 @@ function LedgerDashboard({
     setNoteInput("");
     notify(
       wasEditing
-        ? "Transaction updated."
-        : `${kindLabel(transactionKind)} saved.`,
+        ? "Transaction updated successfully to cloud"
+        : "✓ Transaction saved successfully to cloud",
     );
   }
 
@@ -2380,10 +2406,18 @@ function LedgerDashboard({
         <div className="app-content mx-auto max-w-[1440px] px-4 pt-6 md:px-8 md:pt-8">
           {message && (
             <div
-              role="status"
-              className="fade-up mb-4 flex items-center gap-2 rounded-[8px] border border-[#d9e8c9] bg-[#eff7e6] px-3.5 py-2.5 text-[11px] text-[#42642d]"
+              role={messageTone === "error" ? "alert" : "status"}
+              className={`fade-up mb-4 flex items-center gap-2 rounded-[8px] border px-3.5 py-2.5 text-[11px] ${
+                messageTone === "error"
+                  ? "border-[#f1d1c7] bg-[#fff2ee] text-[#a65335]"
+                  : "border-[#d9e8c9] bg-[#eff7e6] text-[#42642d]"
+              }`}
             >
-              <CircleCheck size={15} />
+              {messageTone === "error" ? (
+                <CircleAlert size={15} />
+              ) : (
+                <CircleCheck size={15} />
+              )}
               <span className="min-w-0 flex-1">{message}</span>
             </div>
           )}
@@ -2822,8 +2856,12 @@ function LedgerDashboard({
               <form
                 id="transaction-entry"
                 onSubmit={addTransaction}
-                className="rounded-[10px] border border-[#e4e8e3] bg-white p-4 md:p-5"
+                aria-busy={transactionSubmitting}
+                className={`rounded-[10px] border border-[#e4e8e3] bg-white p-4 transition-opacity md:p-5 ${
+                  transactionSubmitting ? "opacity-70" : ""
+                }`}
               >
+                <fieldset disabled={transactionSubmitting} className="contents">
                 <div
                   className="mb-4 flex gap-1.5 overflow-x-auto border-b border-[#edf0ec] pb-3 scrollbar-hidden"
                   role="tablist"
@@ -3185,16 +3223,28 @@ function LedgerDashboard({
                     Transactions are stored in your secure cloud ledger.
                   </span>
                   <button
-                    disabled={!isOpen || transferAccountError || !isOnline || isSaving}
+                    disabled={
+                      !isOpen ||
+                      transferAccountError ||
+                      !isOnline ||
+                      isSaving ||
+                      transactionSubmitting
+                    }
                     type="submit"
                     className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
                   >
-                    {editingTransactionId ? (
+                    {transactionSubmitting ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : editingTransactionId ? (
                       <Check size={14} />
                     ) : (
                       <Plus size={14} />
                     )}
-                    {editingTransactionId ? "Save changes" : "Add transaction"}
+                    {transactionSubmitting
+                      ? "Saving to cloud..."
+                      : editingTransactionId
+                        ? "Save changes"
+                        : "Add transaction"}
                   </button>
                   {editingTransactionId && (
                     <button
@@ -3213,6 +3263,7 @@ function LedgerDashboard({
                     </button>
                   )}
                 </div>
+                </fieldset>
               </form>
               <div className="mt-4 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
                 <div className="flex flex-col gap-3 border-b border-[#edf0ec] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
