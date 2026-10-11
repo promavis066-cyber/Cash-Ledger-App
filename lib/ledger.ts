@@ -20,10 +20,21 @@ export interface SessionAccountBalances {
   groundClosing: Record<AccountId, number | null>;
 }
 
+export interface AuditCheckpoint {
+  id: string;
+  timestamp: string;
+  expectedCash: number;
+  countedCash: number;
+  variance: number;
+  stackAmounts: number[];
+  afterTransactionId: string | null;
+}
+
 export interface DailySession {
   date: string;
   activeAccountIds: AccountId[];
   accountBalances: SessionAccountBalances;
+  auditCheckpoints?: AuditCheckpoint[];
   /** Legacy fields retained so saved sessions from v1 remain readable. */
   openingBalance: number;
   closingBalance: number | null;
@@ -149,6 +160,37 @@ function firstValidTimestamp(...values: unknown[]): string | undefined {
   );
 }
 
+function isAuditCheckpoint(value: unknown): value is AuditCheckpoint {
+  if (value === null || typeof value !== "object") return false;
+  if (
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("timestamp" in value) ||
+    typeof value.timestamp !== "string" ||
+    !Number.isFinite(new Date(value.timestamp).getTime()) ||
+    !("expectedCash" in value) ||
+    typeof value.expectedCash !== "number" ||
+    !Number.isFinite(value.expectedCash) ||
+    !("countedCash" in value) ||
+    typeof value.countedCash !== "number" ||
+    !Number.isFinite(value.countedCash) ||
+    !("variance" in value) ||
+    typeof value.variance !== "number" ||
+    !Number.isFinite(value.variance) ||
+    !("stackAmounts" in value) ||
+    !Array.isArray(value.stackAmounts) ||
+    !value.stackAmounts.every(
+      (amount) => typeof amount === "number" && Number.isFinite(amount),
+    ) ||
+    !("afterTransactionId" in value) ||
+    (value.afterTransactionId !== null &&
+      typeof value.afterTransactionId !== "string")
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function normalizeLedger(value: unknown): LedgerData {
   if (!value || typeof value !== "object") return emptyLedger();
   const saved = value as Partial<LedgerData>;
@@ -196,6 +238,9 @@ export function normalizeLedger(value: unknown): LedgerData {
           ...session,
           activeAccountIds,
           accountBalances: { opening, groundClosing },
+          auditCheckpoints: Array.isArray(session.auditCheckpoints)
+            ? session.auditCheckpoints.filter(isAuditCheckpoint)
+            : [],
         };
       })
     : [];

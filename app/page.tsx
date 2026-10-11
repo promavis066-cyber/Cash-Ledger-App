@@ -9,6 +9,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ClipboardCheck,
   CircleAlert,
   CircleCheck,
   Clock3,
@@ -35,6 +36,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import {
   FormEvent,
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -44,6 +46,7 @@ import type { User } from "@supabase/supabase-js";
 import {
   accountClosingBalances,
   accountDifference,
+  AuditCheckpoint,
   emptyLedger,
   formatMMK,
   kindLabel,
@@ -65,7 +68,7 @@ import {
 } from "@/lib/ledgerDatabase";
 import { supabase } from "@/lib/supabase";
 
-type ModalKind = "open" | "close" | "accounts" | "admin" | null;
+type ModalKind = "open" | "close" | "accounts" | "admin" | "audit" | null;
 type AppTab =
   | "overview"
   | "wallet"
@@ -216,6 +219,43 @@ function TransactionChannels({
         </>
       )}
     </span>
+  );
+}
+
+function AuditTimelineMarker({
+  checkpoint,
+}: {
+  checkpoint: AuditCheckpoint;
+}) {
+  const balanced = checkpoint.variance === 0;
+  const time = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(checkpoint.timestamp));
+
+  return (
+    <div
+      role="note"
+      aria-label={`Cash drawer ${balanced ? "verified balanced" : "audit discrepancy"} at ${time}. Counted ${formatMMK(checkpoint.countedCash)} MMK.`}
+      className={`flex items-center gap-2 px-4 py-2 ${balanced ? "text-[#5b8046]" : "text-[#a85645]"}`}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-px flex-1 ${balanced ? "bg-[#dcebd2]" : "bg-[#f0d8d2]"}`}
+      />
+      <span
+        className={`inline-flex max-w-full flex-wrap items-center justify-center gap-1.5 rounded-full border px-2.5 py-1 text-center text-[8px] font-medium ${balanced ? "border-[#e0ecd8] bg-[#f4f8ef]" : "border-[#f1ddd7] bg-[#fff7f4]"}`}
+        title={`Expected ${formatMMK(checkpoint.expectedCash)} MMK · variance ${checkpoint.variance > 0 ? "+" : ""}${formatMMK(checkpoint.variance)} MMK`}
+      >
+        {balanced ? <CircleCheck size={11} /> : <CircleAlert size={11} />}
+        Cash Drawer {balanced ? "Verified Balanced" : "Variance Found"} ·{" "}
+        {time} (Count: {formatMMK(checkpoint.countedCash)} MMK)
+      </span>
+      <span
+        aria-hidden="true"
+        className={`h-px flex-1 ${balanced ? "bg-[#dcebd2]" : "bg-[#f0d8d2]"}`}
+      />
+    </div>
   );
 }
 
@@ -672,6 +712,7 @@ function LedgerDashboard({
   const [closingAmounts, setClosingAmounts] = useState<
     Record<AccountId, string>
   >({});
+  const [auditStackAmounts, setAuditStackAmounts] = useState<string[]>([""]);
   const [amountInput, setAmountInput] = useState("");
   const [commissionInput, setCommissionInput] = useState("");
   const [customerInput, setCustomerInput] = useState("");
@@ -832,6 +873,30 @@ function LedgerDashboard({
     sessionWalletFilter,
     todayTransactions,
   ]);
+  const auditCheckpoints = todaySession?.auditCheckpoints ?? [];
+  const auditCheckpointsByTransaction = new Map<string, AuditCheckpoint[]>();
+  for (const checkpoint of auditCheckpoints) {
+    if (!checkpoint.afterTransactionId) continue;
+    const checkpoints =
+      auditCheckpointsByTransaction.get(checkpoint.afterTransactionId) ?? [];
+    checkpoints.push(checkpoint);
+    auditCheckpointsByTransaction.set(checkpoint.afterTransactionId, checkpoints);
+  }
+  for (const checkpoints of auditCheckpointsByTransaction.values()) {
+    checkpoints.sort((left, right) =>
+      left.timestamp.localeCompare(right.timestamp),
+    );
+  }
+  const auditCheckpointsAtStart = auditCheckpoints.filter(
+    (checkpoint) => !checkpoint.afterTransactionId,
+  );
+  const auditCheckpointsAtEnd = auditCheckpoints.filter(
+    (checkpoint) =>
+      checkpoint.afterTransactionId &&
+      !sessionTransactions.some(
+        (transaction) => transaction.id === checkpoint.afterTransactionId,
+      ),
+  );
   const filteredTransactions = useMemo(
     () =>
       ledger.transactions.filter(
@@ -853,6 +918,19 @@ function LedgerDashboard({
     openingBalances,
     todayTransactions,
     todaySession?.activeAccountIds ?? [],
+  );
+  const auditExpectedCash = accountBalances["cash-drawer"] ?? 0;
+  const auditCountedCash = auditStackAmounts.reduce(
+    (total, amount) => total + parseCurrencyInput(amount),
+    0,
+  );
+  const auditDifference = auditCountedCash - auditExpectedCash;
+  const hasAuditStackAmount = auditStackAmounts.some(
+    (amount) => amount.trim() !== "",
+  );
+  const auditStacksAreValid = auditStackAmounts.every(
+    (amount) =>
+      !amount.trim() || Number.isSafeInteger(parseCurrencyInput(amount)),
   );
   const openingBalance = openingBalances["cash-drawer"] ?? 0;
   const digitalOpeningBalance = Object.entries(openingBalances)
@@ -1455,6 +1533,81 @@ function LedgerDashboard({
       });
     }
     setModal("close");
+  }
+
+  function startAuditFlow() {
+    setAuditStackAmounts([""]);
+    setModal("audit");
+  }
+
+  async function confirmCashAudit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!todaySession || !isOpen) {
+      notify("Open a session before recording a cash drawer audit.", "error");
+      return;
+    }
+    if (!isOnline) {
+      notify("Connect to the internet before saving an audit checkpoint.", "error");
+      return;
+    }
+
+    const enteredAmounts = auditStackAmounts.filter(
+      (amount) => amount.trim() !== "",
+    );
+    if (
+      !enteredAmounts.length ||
+      enteredAmounts.some(
+        (amount) =>
+          !/^\d[\d,]*$/.test(amount.trim()) ||
+          !Number.isSafeInteger(parseCurrencyInput(amount)),
+      )
+    ) {
+      notify("Enter whole, non-negative amounts for at least one cash stack.", "error");
+      return;
+    }
+
+    const stackAmounts = enteredAmounts.map(parseCurrencyInput);
+    const countedCash = stackAmounts.reduce((total, amount) => total + amount, 0);
+    if (!Number.isSafeInteger(countedCash)) {
+      notify("The total counted cash is too large to record safely.", "error");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const checkpoint: AuditCheckpoint = {
+      id: crypto.randomUUID(),
+      timestamp,
+      expectedCash: auditExpectedCash,
+      countedCash,
+      variance: countedCash - auditExpectedCash,
+      stackAmounts,
+      afterTransactionId:
+        todayTransactions[todayTransactions.length - 1]?.id ?? null,
+    };
+    const nextLedger: LedgerData = {
+      ...ledger,
+      sessions: ledger.sessions.map((session) =>
+        session.date === activeDate
+          ? {
+              ...session,
+              auditCheckpoints: [
+                ...(session.auditCheckpoints ?? []),
+                checkpoint,
+              ],
+            }
+          : session,
+      ),
+    };
+    if (!(await persistChanges(nextLedger))) return;
+
+    setAuditStackAmounts([""]);
+    setModal(null);
+    notify(
+      checkpoint.variance === 0
+        ? "Cash drawer balanced and verified."
+        : `Audit checkpoint saved with a ${checkpoint.variance > 0 ? "surplus" : "shortage"} of ${formatMMK(Math.abs(checkpoint.variance))} MMK.`,
+      checkpoint.variance === 0 ? "success" : "error",
+    );
   }
 
   function requestAdminUnlock(action: AdminAction, date = activeDate) {
@@ -2748,12 +2901,23 @@ function LedgerDashboard({
                         : "Session balances start at zero"}
                     </p>
                   </div>
-                  <button
-                    onClick={() => setActiveTab("wallet")}
-                    className="text-[10px] font-semibold text-[#49604f] underline decoration-[#c7d3c6] underline-offset-4"
-                  >
-                    All wallets
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={startAuditFlow}
+                      disabled={!isOpen || !isOnline || isSaving}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-[#dce8d6] bg-[#f6f9f2] px-2.5 text-[9px] font-semibold text-[#496c3c] transition hover:bg-[#edf5e5] disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <ClipboardCheck size={13} />
+                      Audit cash
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("wallet")}
+                      className="text-[10px] font-semibold text-[#49604f] underline decoration-[#c7d3c6] underline-offset-4"
+                    >
+                      All wallets
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {(todaySession
@@ -3328,13 +3492,17 @@ function LedgerDashboard({
                     </select>
                   </div>
                 </div>
-                {sessionTransactions.length ? (
+                {sessionTransactions.length || auditCheckpoints.length ? (
                   <div className="divide-y divide-[#edf0ec]">
+                    {auditCheckpointsAtStart.map((checkpoint) => (
+                      <AuditTimelineMarker
+                        key={checkpoint.id}
+                        checkpoint={checkpoint}
+                      />
+                    ))}
                     {sessionTransactions.map((transaction, index) => (
-                      <div
-                        key={transaction.id}
-                        className="flex items-center gap-3 px-3.5 py-3"
-                      >
+                      <Fragment key={transaction.id}>
+                        <div className="flex items-center gap-3 px-3.5 py-3">
                         <span
                           aria-label={`Transaction number ${index + 1}`}
                           className="w-5 shrink-0 text-center text-[9px] font-medium text-[#89948c]"
@@ -3425,7 +3593,22 @@ function LedgerDashboard({
                             </button>
                           </div>
                         )}
-                      </div>
+                        </div>
+                        {(auditCheckpointsByTransaction.get(transaction.id) ?? []).map(
+                          (checkpoint) => (
+                            <AuditTimelineMarker
+                              key={checkpoint.id}
+                              checkpoint={checkpoint}
+                            />
+                          ),
+                        )}
+                      </Fragment>
+                    ))}
+                    {auditCheckpointsAtEnd.map((checkpoint) => (
+                      <AuditTimelineMarker
+                        key={checkpoint.id}
+                        checkpoint={checkpoint}
+                      />
                     ))}
                   </div>
                 ) : todayTransactions.length ? (
@@ -4467,6 +4650,193 @@ function LedgerDashboard({
         })}
       </nav>
 
+      {modal === "audit" && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
+          }}
+        >
+          <form
+            onSubmit={confirmCashAudit}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="audit-dialog-title"
+            className="dialog-safe-area fade-up relative z-[51] w-full max-h-[calc(100dvh-env(safe-area-inset-top))] max-w-[460px] overflow-y-auto rounded-t-[12px] border border-[#e4e8e3] bg-white p-5 shadow-[0_18px_70px_rgba(12,35,23,0.2)] sm:rounded-[12px] sm:p-6"
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[1.6px] text-[#8b968d]">
+                  Mid-day verification ·{" "}
+                  {formatDate(activeDate, {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </p>
+                <h2
+                  id="audit-dialog-title"
+                  className="m-0 text-[17px] font-semibold tracking-[-0.4px]"
+                >
+                  Cash drawer spot check
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                aria-label="Close cash drawer audit"
+                className="relative z-[60] grid size-11 shrink-0 place-items-center rounded-[8px] text-[#66756b] hover:bg-[#f2f4f1]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="mb-4 text-[11px] leading-5 text-[#7d8980]">
+              Enter the cash amounts you counted. Saving records a timeline
+              checkpoint only; it will not change any account balance.
+            </p>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="m-0 text-[11px] font-semibold text-[#34443b]">
+                Cash stacks · MMK
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAuditStackAmounts((current) => [...current, ""])}
+                className="inline-flex h-8 items-center gap-1 rounded-[7px] border border-[#dce8d6] px-2.5 text-[9px] font-semibold text-[#496c3c] transition hover:bg-[#f4f8ef]"
+              >
+                <Plus size={12} />
+                Add stack
+              </button>
+            </div>
+            <div className="max-h-[32vh] space-y-2 overflow-y-auto pr-1">
+              {auditStackAmounts.map((amount, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <label className="sr-only" htmlFor={`audit-stack-${index}`}>
+                    Cash stack {index + 1} amount in MMK
+                  </label>
+                  <span className="w-7 shrink-0 text-center text-[9px] font-medium text-[#8b968d]">
+                    {index + 1}
+                  </span>
+                  <input
+                    id={`audit-stack-${index}`}
+                    inputMode="numeric"
+                    type="text"
+                    placeholder="Enter amount"
+                    value={amount}
+                    onChange={(event) => {
+                      const digits = event.currentTarget.value.replace(/\D/g, "");
+                      setAuditStackAmounts((current) =>
+                        current.map((stack, stackIndex) =>
+                          stackIndex === index
+                            ? formatCurrencyInputValue(digits)
+                            : stack,
+                        ),
+                      );
+                    }}
+                    className="h-10 min-w-0 flex-1 rounded-[7px] border border-[#e1e6e0] bg-white px-3 text-[11px] text-[#34443b] outline-none transition focus:border-[#a7c296] focus:ring-2 focus:ring-[#e7f0df]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAuditStackAmounts((current) =>
+                        current.filter((_, stackIndex) => stackIndex !== index),
+                      )
+                    }
+                    disabled={auditStackAmounts.length === 1}
+                    aria-label={`Remove cash stack ${index + 1}`}
+                    className="grid size-9 shrink-0 place-items-center rounded-[7px] text-[#8b968d] transition hover:bg-[#fff1ed] hover:text-[#a85645] disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div
+              className={`mt-4 rounded-[9px] border p-3.5 ${auditDifference === 0 ? "border-[#e1ecd9] bg-[#f7faf3] text-[#4f7937]" : "border-[#f0ddd7] bg-[#fff8f5] text-[#b05a3b]"}`}
+            >
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="mb-1 text-[9px] font-medium text-[#89948c]">
+                    Expected cash
+                  </p>
+                  <p className="number-font m-0 text-[12px] font-semibold text-[#34443b]">
+                    {formatMMK(auditExpectedCash)}{" "}
+                    <span className="text-[8px] font-normal text-[#89948c]">
+                      MMK
+                    </span>
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="mb-1 text-[9px] font-medium text-[#89948c]">
+                    Total counted
+                  </p>
+                  <p className="number-font m-0 text-[12px] font-semibold text-[#34443b]">
+                    {formatMMK(auditCountedCash)}{" "}
+                    <span className="text-[8px] font-normal text-[#89948c]">
+                      MMK
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 flex items-center justify-between border-t border-current/10 pt-2.5">
+                <span className="text-[10px] font-semibold">
+                  {auditDifference === 0 ? "Balanced" : "Variance"}
+                </span>
+                <span className="number-font text-[12px] font-semibold">
+                  {auditDifference > 0 ? "+" : ""}
+                  {formatMMK(auditDifference)} MMK
+                </span>
+              </div>
+            </div>
+            {!isOpen && (
+              <p role="alert" className="mb-0 mt-3 text-[10px] text-[#a85645]">
+                Open the session before recording a spot check.
+              </p>
+            )}
+            {!isOnline && (
+              <p role="alert" className="mb-0 mt-3 text-[10px] text-[#a85645]">
+                Connect to the internet to save this audit checkpoint.
+              </p>
+            )}
+            <div className="mt-5 flex flex-wrap justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setAuditStackAmounts([""])}
+                className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
+              >
+                Clear
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModal(null)}
+                  className="h-9 rounded-[7px] border border-[#e3e8e2] px-3.5 text-[10px] font-medium text-[#6d7971]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    !isOpen ||
+                    !isOnline ||
+                    isSaving ||
+                    !hasAuditStackAmount ||
+                    !auditStacksAreValid ||
+                    !Number.isSafeInteger(auditCountedCash)
+                  }
+                  className="flex h-9 items-center gap-1.5 rounded-[7px] bg-[#173c31] px-3.5 text-[10px] font-semibold text-white transition hover:bg-[#245745] disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {isSaving ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Check size={13} />
+                  )}
+                  {isSaving ? "Saving..." : "Confirm & save"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
       {modal === "admin" && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#10231c]/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
