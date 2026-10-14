@@ -59,6 +59,10 @@ export interface LedgerTransaction {
   amount: number;
   commission: number;
   commissionAccountId?: AccountId;
+  commission_wallet?: string;
+  commission_wallet_id?: string;
+  commissionReceivedIn?: string;
+  commission_location?: string;
   note: string;
   fromAccountId: AccountId;
   toAccountId: AccountId | null;
@@ -198,6 +202,37 @@ export function normalizeLedger(value: unknown): LedgerData {
     Array.isArray(saved.accounts) && saved.accounts.length
       ? saved.accounts
       : defaultAccounts;
+  const normalizeCommissionAccount = (
+    transaction: LedgerTransaction,
+  ): AccountId => {
+    const candidates = [
+      transaction.commissionAccountId,
+      transaction.commission_wallet_id,
+      transaction.commission_wallet,
+      transaction.commissionReceivedIn,
+      transaction.commission_location,
+    ].filter((candidate): candidate is string => typeof candidate === "string");
+
+    for (const candidate of candidates) {
+      const normalizedCandidate = candidate.trim().toLocaleLowerCase();
+      if (!normalizedCandidate) continue;
+      const matchingAccount = accountList.find(
+        (account) =>
+          account.id.toLocaleLowerCase() === normalizedCandidate ||
+          account.name.trim().toLocaleLowerCase() === normalizedCandidate ||
+          account.shortName.trim().toLocaleLowerCase() === normalizedCandidate,
+      );
+      if (matchingAccount) return matchingAccount.id;
+      if (
+        normalizedCandidate === "cash" ||
+        normalizedCandidate.includes("cash drawer") ||
+        normalizedCandidate.includes("cash in drawer")
+      ) {
+        return "cash-drawer";
+      }
+    }
+    return "cash-drawer";
+  };
   const transactions = Array.isArray(saved.transactions)
     ? saved.transactions.map((transaction) => ({
         ...transaction,
@@ -207,7 +242,7 @@ export function normalizeLedger(value: unknown): LedgerData {
           transaction.recorded_at,
           transaction.timestamp,
         ),
-        commissionAccountId: transaction.commissionAccountId ?? "cash-drawer",
+        commissionAccountId: normalizeCommissionAccount(transaction),
       }))
     : [];
   const sessions = Array.isArray(saved.sessions)

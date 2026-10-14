@@ -79,6 +79,7 @@ type AppTab =
 type IconComponent = typeof Activity;
 type AdminAction = "reopen" | "date";
 type CustomerReportRange = "today" | "month" | "all" | "custom";
+type CommissionReportRange = "today" | "single" | "range";
 const ADMIN_PASSWORD = "admin";
 
 function customerPhoneKey(phone: string) {
@@ -748,6 +749,11 @@ function LedgerDashboard({
     useState<AccountId | "ALL">("ALL");
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
+  const [commissionReportRange, setCommissionReportRange] =
+    useState<CommissionReportRange>("today");
+  const [commissionReportDate, setCommissionReportDate] = useState(today);
+  const [commissionReportFrom, setCommissionReportFrom] = useState(today);
+  const [commissionReportTo, setCommissionReportTo] = useState(today);
   const [message, setMessage] = useState("");
   const [isOnline, setIsOnline] = useState(true);
 
@@ -1100,6 +1106,84 @@ function LedgerDashboard({
     (total, transaction) => total + transaction.commission,
     0,
   );
+  const commissionReportDates = useMemo(() => {
+    if (commissionReportRange === "today") {
+      return { start: today, end: today };
+    }
+    if (commissionReportRange === "single") {
+      return { start: commissionReportDate, end: commissionReportDate };
+    }
+    return { start: commissionReportFrom, end: commissionReportTo };
+  }, [
+    commissionReportDate,
+    commissionReportFrom,
+    commissionReportRange,
+    commissionReportTo,
+    today,
+  ]);
+  const commissionReportTransactions = useMemo(
+    () =>
+      commissionReportDates.start &&
+      commissionReportDates.end &&
+      commissionReportDates.start <= commissionReportDates.end
+        ? ledger.transactions.filter(
+            (transaction) =>
+              transaction.commission > 0 &&
+              transaction.date >= commissionReportDates.start &&
+              transaction.date <= commissionReportDates.end,
+          )
+        : [],
+    [commissionReportDates, ledger.transactions],
+  );
+  const commissionReportTotal = commissionReportTransactions.reduce(
+    (total, transaction) => total + transaction.commission,
+    0,
+  );
+  const commissionLocationRows = Array.from(
+    commissionReportTransactions.reduce((groups, transaction) => {
+      const accountId = commissionAccountId(transaction);
+      const group = groups.get(accountId) ?? {
+        accountId,
+        transactionCount: 0,
+        total: 0,
+      };
+      group.transactionCount += 1;
+      group.total += transaction.commission;
+      groups.set(accountId, group);
+      return groups;
+    }, new Map<AccountId, { accountId: AccountId; transactionCount: number; total: number }>()),
+  )
+    .map(([, group]) => ({
+      ...group,
+      account: ledger.accounts.find((account) => account.id === group.accountId),
+    }))
+    .sort((left, right) => right.total - left.total);
+  const commissionCashTotal = commissionLocationRows
+    .filter((row) => row.account?.kind === "cash" || row.accountId === "cash-drawer")
+    .reduce((total, row) => total + row.total, 0);
+  const commissionDigitalTotal = commissionLocationRows
+    .filter((row) => row.account?.kind !== "cash" && row.accountId !== "cash-drawer")
+    .reduce((total, row) => total + row.total, 0);
+  const commissionReportDateLabel =
+    !commissionReportDates.start || !commissionReportDates.end
+      ? "Select a date range"
+      : commissionReportDates.start > commissionReportDates.end
+        ? "End date must be on or after start date"
+        : commissionReportDates.start === commissionReportDates.end
+      ? formatDate(commissionReportDates.start, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })
+      : `${formatDate(commissionReportDates.start, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })} — ${formatDate(commissionReportDates.end, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })}`;
   const customerAnalyticsRange = useMemo(() => {
     const startDate =
       customerReportRange === "today"
@@ -4191,6 +4275,280 @@ function LedgerDashboard({
                   Based on {customerAnalyticsTransactions.length} transactions
                   in the selected date range.
                 </p>
+              </div>
+              <div className="mb-5 overflow-hidden rounded-[10px] border border-[#e4e8e3] bg-white">
+                <div className="flex flex-col justify-between gap-3 border-b border-[#edf0ec] px-4 py-3 sm:flex-row sm:items-center">
+                  <div>
+                    <h3 className="m-0 flex items-center gap-2 text-[13px] font-semibold">
+                      <TrendingUp size={15} className="text-[#668d4e]" />
+                      Commission Report
+                    </h3>
+                    <p className="mb-0 mt-1 text-[9px] text-[#89948c]">
+                      Commission earnings by the account that received them
+                    </p>
+                  </div>
+                  <div
+                    className="flex flex-wrap items-center gap-1.5"
+                    role="group"
+                    aria-label="Commission report date filter"
+                  >
+                    {(
+                      [
+                        ["today", "Today"],
+                        ["single", "Selected date"],
+                        ["range", "Date range"],
+                      ] as [CommissionReportRange, string][]
+                    ).map(([range, label]) => (
+                      <button
+                        key={range}
+                        type="button"
+                        aria-pressed={commissionReportRange === range}
+                        onClick={() => setCommissionReportRange(range)}
+                        className={`h-7 rounded-md px-2.5 text-[9px] font-semibold transition ${
+                          commissionReportRange === range
+                            ? "bg-[#173c31] text-white"
+                            : "border border-[#e1e6e0] bg-white text-[#758178] hover:bg-[#f7f9f5]"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    {commissionReportRange === "single" && (
+                      <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                        <span className="text-[9px] text-[#87928a]">Date</span>
+                        <input
+                          aria-label="Commission report date"
+                          type="date"
+                          value={commissionReportDate}
+                          onChange={(event) =>
+                            setCommissionReportDate(event.target.value)
+                          }
+                          className="w-[128px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                        />
+                      </label>
+                    )}
+                    {commissionReportRange === "range" && (
+                      <>
+                        <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                          <span className="text-[9px] text-[#87928a]">Start</span>
+                          <input
+                            aria-label="Commission report start date"
+                            type="date"
+                            value={commissionReportFrom}
+                            max={commissionReportTo || undefined}
+                            onChange={(event) =>
+                              setCommissionReportFrom(event.target.value)
+                            }
+                            className="w-[128px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                          />
+                        </label>
+                        <label className="flex h-8 items-center gap-1.5 rounded-[7px] border border-[#e1e6e0] bg-white px-2">
+                          <span className="text-[9px] text-[#87928a]">End</span>
+                          <input
+                            aria-label="Commission report end date"
+                            type="date"
+                            value={commissionReportTo}
+                            min={commissionReportFrom || undefined}
+                            onChange={(event) =>
+                              setCommissionReportTo(event.target.value)
+                            }
+                            className="w-[128px] bg-transparent text-[9px] text-[#46544b] outline-none"
+                          />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="p-3 sm:p-4">
+                  <div className="rounded-[9px] border border-[#e5ecdf] bg-[#f8faf5] p-4 sm:p-5">
+                    <p className="mb-1 text-[9px] font-semibold uppercase tracking-[1.1px] text-[#77876f]">
+                      TOTAL COMMISSION EARNED
+                    </p>
+                    <p className="number-font m-0 text-[25px] font-bold tracking-[-0.8px] text-[#253b2b] sm:text-[30px]">
+                      {formatMMK(commissionReportTotal)}{" "}
+                      <span className="text-[11px] font-medium tracking-normal text-[#87928a]">
+                        MMK
+                      </span>
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-[#849087]">
+                      <span>
+                        {commissionReportTransactions.length} commission-generating{" "}
+                        {commissionReportTransactions.length === 1
+                          ? "transaction"
+                          : "transactions"}
+                      </span>
+                      <span className="hidden text-[#c2cbc2] sm:inline">·</span>
+                      <span>{commissionReportDateLabel}</span>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    {[
+                      ["Total in Cash Drawer", commissionCashTotal],
+                      ["Total in Digital Wallets", commissionDigitalTotal],
+                      ["Combined Total Commission", commissionReportTotal],
+                    ].map(([label, amount]) => (
+                      <div
+                        key={label}
+                        className="rounded-[8px] border border-[#edf0ec] bg-white px-3 py-2.5"
+                      >
+                        <p className="mb-1 text-[8px] font-medium text-[#89948c]">
+                          {label}
+                        </p>
+                        <p className="number-font m-0 text-[12px] font-semibold text-[#34443b]">
+                          {formatMMK(Number(amount))}{" "}
+                          <span className="text-[8px] font-normal text-[#98a199]">
+                            MMK
+                          </span>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4">
+                    <h4 className="m-0 text-[10px] font-semibold text-[#445249]">
+                      Commission by receiving location
+                    </h4>
+                    {commissionLocationRows.length ? (
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                        {commissionLocationRows.map((row) => {
+                          const share =
+                            commissionReportTotal > 0
+                              ? (row.total / commissionReportTotal) * 100
+                              : 0;
+                          const account = row.account;
+                          return (
+                            <div
+                              key={row.accountId}
+                              className="rounded-[8px] border border-[#edf0ec] bg-[#fcfdfb] p-3"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="m-0 truncate text-[10px] font-semibold text-[#34443b]">
+                                    {account?.shortName ?? "Cash Drawer"}
+                                  </p>
+                                  <span
+                                    className={`mt-1 inline-block rounded-full px-1.5 py-0.5 text-[7px] font-medium ${
+                                      account?.kind === "cash" ||
+                                      row.accountId === "cash-drawer"
+                                        ? "bg-[#e6f4cf] text-[#52733b]"
+                                        : "bg-[#e8f1f7] text-[#4d728a]"
+                                    }`}
+                                  >
+                                    {account?.kind === "cash" ||
+                                    row.accountId === "cash-drawer"
+                                      ? "Physical cash"
+                                      : "Digital wallet"}
+                                  </span>
+                                </div>
+                                <span className="number-font shrink-0 text-[8px] font-semibold text-[#728176]">
+                                  {share.toFixed(1)}%
+                                </span>
+                              </div>
+                              <div className="mt-2 flex items-end justify-between gap-2">
+                                <span className="text-[8px] text-[#89948c]">
+                                  {row.transactionCount}{" "}
+                                  {row.transactionCount === 1
+                                    ? "transaction"
+                                    : "transactions"}
+                                </span>
+                                <span className="number-font text-[11px] font-semibold text-[#34443b]">
+                                  {formatMMK(row.total)} MMK
+                                </span>
+                              </div>
+                              <div
+                                className="mt-2 h-1 overflow-hidden rounded-full bg-[#edf1eb]"
+                                aria-label={`${share.toFixed(1)} percent of total commission`}
+                              >
+                                <div
+                                  className="h-full rounded-full bg-[#9bb87c]"
+                                  style={{ width: `${share}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="mb-0 mt-2 rounded-[8px] bg-[#fafbf9] px-3 py-5 text-center text-[9px] text-[#929d95]">
+                        No commission earned in this date range.
+                      </p>
+                    )}
+                  </div>
+                  <div className="mt-4 overflow-hidden rounded-[8px] border border-[#edf0ec]">
+                    <div className="border-b border-[#edf0ec] bg-[#fafbf9] px-3 py-2">
+                      <h4 className="m-0 text-[9px] font-semibold text-[#445249]">
+                        Commission transaction log
+                      </h4>
+                    </div>
+                    <div className="table-scroll">
+                      <table className="w-full min-w-[700px] border-collapse text-left">
+                        <thead>
+                          <tr className="border-b border-[#edf0ec] text-[8px] font-semibold uppercase tracking-[.6px] text-[#929d95]">
+                            <th className="px-3 py-2">Date &amp; time</th>
+                            <th className="px-3 py-2">Customer / type</th>
+                            <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-right">Commission</th>
+                            <th className="px-3 py-2">Received in</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {commissionReportTransactions.map((transaction) => {
+                            const location = ledger.accounts.find(
+                              (account) =>
+                                account.id === commissionAccountId(transaction),
+                            );
+                            return (
+                              <tr
+                                key={transaction.id}
+                                className="border-b border-[#f0f2ef] last:border-0"
+                              >
+                                <td className="whitespace-nowrap px-3 py-2 text-[8px] text-[#77837a]">
+                                  {formatDate(transaction.date, {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })}{" "}
+                                  · {transaction.time}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className="block max-w-[160px] truncate text-[9px] font-medium text-[#45534a]">
+                                    {transaction.customer || "Walk-in"}
+                                  </span>
+                                  <span className="text-[8px] text-[#929d95]">
+                                    {kindLabel(transaction.kind)}
+                                  </span>
+                                </td>
+                                <td className="number-font px-3 py-2 text-right text-[9px] text-[#58665d]">
+                                  {formatMMK(transaction.amount)} MMK
+                                </td>
+                                <td className="number-font px-3 py-2 text-right text-[9px] font-semibold text-[#4c7540]">
+                                  {formatMMK(transaction.commission)} MMK
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span
+                                    className={`inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-medium ${
+                                      location?.kind === "cash" ||
+                                      commissionAccountId(transaction) ===
+                                        "cash-drawer"
+                                        ? "bg-[#e6f4cf] text-[#52733b]"
+                                        : "bg-[#e8f1f7] text-[#4d728a]"
+                                    }`}
+                                  >
+                                    In {location?.shortName ?? "Cash Drawer"}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      {commissionReportTransactions.length === 0 && (
+                        <p className="m-0 px-3 py-5 text-center text-[9px] text-[#929d95]">
+                          No commission transactions for this period.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
                 <div>
