@@ -1974,7 +1974,6 @@ function LedgerDashboard({
       fromAccountId: source,
       toAccountId: destination,
     };
-    const wasEditing = Boolean(editingTransactionId);
     const nextLedger: LedgerData = {
       ...ledger,
       transactions: editingTransactionId
@@ -2000,11 +1999,6 @@ function LedgerDashboard({
     setCustomerInput("");
     setPhoneInput("");
     setNoteInput("");
-    notify(
-      wasEditing
-        ? "Transaction updated successfully to cloud"
-        : "✓ Transaction saved successfully to cloud",
-    );
   }
 
   function editTransaction(transaction: LedgerTransaction) {
