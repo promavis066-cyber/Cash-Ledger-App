@@ -25,6 +25,37 @@ type StoredCustomer = {
   is_favorite?: boolean | null;
 };
 
+const SUPABASE_PAGE_SIZE = 1000;
+
+type SupabaseQueryError = {
+  message: string;
+  code?: string;
+};
+
+type SupabasePage<T> = {
+  data: T[] | null;
+  error: SupabaseQueryError | null;
+};
+
+async function fetchAllRows<T>(
+  fetchPage: (from: number, to: number) => PromiseLike<SupabasePage<T>>,
+): Promise<SupabasePage<T>> {
+  const rows: T[] = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await fetchPage(from, from + SUPABASE_PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < SUPABASE_PAGE_SIZE) {
+      return { data: rows, error: null };
+    }
+    from += SUPABASE_PAGE_SIZE;
+  }
+}
+
 export type CustomerAnalyticsTransaction = Pick<
   LedgerTransaction,
   "customer" | "phone" | "kind" | "amount" | "commission" | "date"
@@ -130,23 +161,30 @@ export async function loadCustomerAnalyticsTransactions(
   startDate?: string,
   endDate?: string,
 ): Promise<CustomerAnalyticsTransaction[]> {
-  let query = supabase
-    .from("transactions")
-    .select(
-      "customer_name, phone_number, kind, amount, commission, transaction_date",
-    )
-    .eq("user_id", user.id);
-  query = query.order("created_at", { ascending: true });
-  if (startDate) query = query.gte("transaction_date", startDate);
-  if (endDate) query = query.lte("transaction_date", endDate);
-  const result = await query;
+  const result = await fetchAllRows((from, to) => {
+    let query = supabase
+      .from("transactions")
+      .select(
+        "customer_name, phone_number, kind, amount, commission, transaction_date",
+      )
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
+    if (startDate) query = query.gte("transaction_date", startDate);
+    if (endDate) query = query.lte("transaction_date", endDate);
+    return query.range(from, to);
+  });
 
   if (isMissingSchemaColumn(result.error)) {
-    const fallback = await supabase
-      .from("transactions")
-      .select("data")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: true });
+    const fallback = await fetchAllRows((from, to) =>
+      supabase
+        .from("transactions")
+        .select("data")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     throwOnError(fallback.error);
     return (fallback.data ?? [])
       .map((record) => parseAnalyticsTransaction(record.data))
@@ -172,36 +210,66 @@ export async function loadLedgerSnapshot(
   user: User,
 ): Promise<LedgerSnapshot> {
   const [wallets, sessions, transactionsWithEditTime] = await Promise.all([
-    supabase.from("wallets").select("id, data").eq("user_id", user.id),
-    supabase.from("sessions").select("id, data").eq("user_id", user.id),
-    supabase
-      .from("transactions")
-      .select("id, data, session_id, created_at, updated_at")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: true }),
-  ]);
-  const transactions = isMissingSchemaColumn(transactionsWithEditTime.error)
-    ? await supabase
+    fetchAllRows((from, to) =>
+      supabase
+        .from("wallets")
+        .select("id, data")
+        .eq("user_id", user.id)
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from("sessions")
+        .select("id, data")
+        .eq("user_id", user.id)
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
         .from("transactions")
-        .select("id, data, session_id, created_at")
+        .select("id, data, session_id, created_at, updated_at")
         .eq("user_id", user.id)
         .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+  ]);
+  const transactions = isMissingSchemaColumn(transactionsWithEditTime.error)
+    ? await fetchAllRows((from, to) =>
+        supabase
+          .from("transactions")
+          .select("id, data, session_id, created_at")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      )
     : transactionsWithEditTime;
 
   throwOnError(wallets.error);
   throwOnError(sessions.error);
   throwOnError(transactions.error);
 
-  const customersWithFavorite = await supabase
-    .from("customers")
-    .select("id, data, is_favorite")
-    .eq("user_id", user.id);
+  const customersWithFavorite = await fetchAllRows((from, to) =>
+    supabase
+      .from("customers")
+      .select("id, data, is_favorite")
+      .eq("user_id", user.id)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
   let customerRows: StoredCustomer[];
   if (isMissingSchemaColumn(customersWithFavorite.error)) {
-    const customersWithoutFavorite = await supabase
-      .from("customers")
-      .select("id, data")
-      .eq("user_id", user.id);
+    const customersWithoutFavorite = await fetchAllRows((from, to) =>
+      supabase
+        .from("customers")
+        .select("id, data")
+        .eq("user_id", user.id)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     throwOnError(customersWithoutFavorite.error);
     customerRows = (customersWithoutFavorite.data ?? []) as StoredCustomer[];
   } else {
@@ -221,14 +289,20 @@ export async function loadLedgerSnapshot(
     created_at?: string;
     updated_at?: string | null;
   }>;
+  const transactionRowsById = new Map<string, (typeof transactionRows)[number]>();
+  for (const row of transactionRows) {
+    transactionRowsById.set(row.id, row);
+    if (
+      row.data &&
+      typeof row.data === "object" &&
+      "id" in row.data &&
+      typeof row.data.id === "string"
+    ) {
+      transactionRowsById.set(row.data.id, row);
+    }
+  }
   savedLedger.transactions = savedLedger.transactions.map((transaction) => {
-    const stored = transactionRows.find((row) => {
-      const data =
-        row.data && typeof row.data === "object"
-          ? (row.data as Partial<LedgerTransaction>)
-          : undefined;
-      return data?.id === transaction.id || row.id === transaction.id;
-    });
+    const stored = transactionRowsById.get(transaction.id);
     const data =
       stored?.data && typeof stored.data === "object"
         ? (stored.data as Partial<
@@ -306,10 +380,14 @@ async function loadRowsForMutation(
   hasUpdatedAtColumn: boolean;
 }> {
   if (table === "customers") {
-    const withFavorite = await supabase
-      .from(table)
-      .select("id, data, is_favorite")
-      .eq("user_id", userId);
+    const withFavorite = await fetchAllRows((from, to) =>
+      supabase
+        .from(table)
+        .select("id, data, is_favorite")
+        .eq("user_id", userId)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     if (!isMissingSchemaColumn(withFavorite.error)) {
       throwOnError(withFavorite.error);
       return {
@@ -318,10 +396,14 @@ async function loadRowsForMutation(
         hasUpdatedAtColumn: false,
       };
     }
-    const withoutFavorite = await supabase
-      .from(table)
-      .select("id, data")
-      .eq("user_id", userId);
+    const withoutFavorite = await fetchAllRows((from, to) =>
+      supabase
+        .from(table)
+        .select("id, data")
+        .eq("user_id", userId)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     throwOnError(withoutFavorite.error);
     return {
       rows: (withoutFavorite.data ?? []) as DataRow[],
@@ -331,11 +413,15 @@ async function loadRowsForMutation(
   }
 
   if (table === "transactions") {
-    const withMetadata = await supabase
-      .from(table)
-      .select("id, data, session_id, created_at, updated_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true });
+    const withMetadata = await fetchAllRows((from, to) =>
+      supabase
+        .from(table)
+        .select("id, data, session_id, created_at, updated_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     if (!isMissingSchemaColumn(withMetadata.error)) {
       throwOnError(withMetadata.error);
       return {
@@ -344,11 +430,15 @@ async function loadRowsForMutation(
         hasUpdatedAtColumn: true,
       };
     }
-    const withoutUpdatedAt = await supabase
-      .from(table)
-      .select("id, data, session_id, created_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true });
+    const withoutUpdatedAt = await fetchAllRows((from, to) =>
+      supabase
+        .from(table)
+        .select("id, data, session_id, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     throwOnError(withoutUpdatedAt.error);
     return {
       rows: (withoutUpdatedAt.data ?? []) as DataRow[],
@@ -357,10 +447,14 @@ async function loadRowsForMutation(
     };
   }
 
-  const result = await supabase
-    .from(table)
-    .select("id, data")
-    .eq("user_id", userId);
+  const result = await fetchAllRows((from, to) =>
+    supabase
+      .from(table)
+      .select("id, data")
+      .eq("user_id", userId)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
   throwOnError(result.error);
   return {
     rows: (result.data ?? []) as DataRow[],
@@ -548,17 +642,25 @@ async function findCustomerRow(user: User, customerId: string) {
     throw new Error("The active Supabase user changed before customer update.");
   }
 
-  const withFavorite = await supabase
-    .from("customers")
-    .select("id, data, is_favorite")
-    .eq("user_id", user.id);
+  const withFavorite = await fetchAllRows((from, to) =>
+    supabase
+      .from("customers")
+      .select("id, data, is_favorite")
+      .eq("user_id", user.id)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
   let rows: DataRow[];
   let hasFavoriteColumn = true;
   if (isMissingSchemaColumn(withFavorite.error)) {
-    const withoutFavorite = await supabase
-      .from("customers")
-      .select("id, data")
-      .eq("user_id", user.id);
+    const withoutFavorite = await fetchAllRows((from, to) =>
+      supabase
+        .from("customers")
+        .select("id, data")
+        .eq("user_id", user.id)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
     throwOnError(withoutFavorite.error);
     rows = (withoutFavorite.data ?? []) as DataRow[];
     hasFavoriteColumn = false;
