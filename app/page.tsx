@@ -670,6 +670,9 @@ function LedgerDashboard({
   const [loadError, setLoadError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [transactionSubmitting, setTransactionSubmitting] = useState(false);
+  const [transactionCooldown, setTransactionCooldown] = useState(false);
+  const transactionSubmissionLockRef = useRef(false);
+  const transactionCooldownTimerRef = useRef<number | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">(
     "success",
   );
@@ -756,6 +759,15 @@ function LedgerDashboard({
   const [commissionReportTo, setCommissionReportTo] = useState(today);
   const [message, setMessage] = useState("");
   const [isOnline, setIsOnline] = useState(true);
+
+  useEffect(
+    () => () => {
+      if (transactionCooldownTimerRef.current !== null) {
+        window.clearTimeout(transactionCooldownTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -1835,10 +1847,26 @@ function LedgerDashboard({
 
   async function addTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (transactionSubmitting || isSaving) return;
+    if (
+      transactionSubmissionLockRef.current ||
+      transactionSubmitting ||
+      transactionCooldown ||
+      isSaving
+    )
+      return;
+    transactionSubmissionLockRef.current = true;
     setTransactionSubmitting(true);
+    let saved = false;
     try {
-      await submitTransaction(event);
+      saved = await submitTransaction(event);
+      if (saved) {
+        setTransactionCooldown(true);
+        transactionCooldownTimerRef.current = window.setTimeout(() => {
+          transactionSubmissionLockRef.current = false;
+          transactionCooldownTimerRef.current = null;
+          setTransactionCooldown(false);
+        }, 10_000);
+      }
     } catch (error) {
       console.error("Could not save the transaction to Supabase.", error);
       notify(
@@ -1849,14 +1877,17 @@ function LedgerDashboard({
       );
     } finally {
       setTransactionSubmitting(false);
+      if (!saved) transactionSubmissionLockRef.current = false;
     }
   }
 
-  async function submitTransaction(event: FormEvent<HTMLFormElement>) {
+  async function submitTransaction(
+    event: FormEvent<HTMLFormElement>,
+  ): Promise<boolean> {
     event.preventDefault();
     if (!isOnline) {
       notify("Connect to the internet before updating your cloud ledger.");
-      return;
+      return false;
     }
     const amount = parseCurrencyInput(amountInput);
     const commission =
@@ -1865,18 +1896,19 @@ function LedgerDashboard({
         : parseCurrencyInput(commissionInput);
     if (!isOpen) {
       notify("Open or unlock this session before recording transactions.");
-      return;
+      return false;
     }
     if (
       !Number.isFinite(amount) ||
       amount <= 0 ||
       !Number.isFinite(commission) ||
       commission < 0
-    )
-      return;
+    ) {
+      return false;
+    }
     if (transactionKind === "TRANSFER" && fromAccountId === toAccountId) {
       notify("Choose two different accounts for a transfer.");
-      return;
+      return false;
     }
     const activeIds = new Set(todaySession?.activeAccountIds ?? []);
     const selectedSource =
@@ -1900,7 +1932,7 @@ function LedgerDashboard({
       (selectedDestination && !activeIds.has(selectedDestination))
     ) {
       notify("Choose accounts that are active in today’s session.");
-      return;
+      return false;
     }
     const isCashIn = transactionKind === "CASH_IN";
     const isCashOut = transactionKind === "CASH_OUT";
@@ -1928,7 +1960,7 @@ function LedgerDashboard({
         : commissionDestinationId;
     if (commission > 0 && !activeIds.has(commissionDestination)) {
       notify("Choose an active account to receive the commission.");
-      return;
+      return false;
     }
     const {
       data: { user: authenticatedUser },
@@ -1942,7 +1974,7 @@ function LedgerDashboard({
         expectedUserId: user.id,
       });
       notify(`Could not save transaction: ${errorMessage}`, "error");
-      return;
+      return false;
     }
     const now = new Date();
     const existingTransaction = editingTransactionId
@@ -1970,10 +2002,39 @@ function LedgerDashboard({
       amount,
       commission,
       commissionAccountId: commissionDestination,
+      commission_wallet_id: commissionDestination,
       note: noteInput.trim(),
       fromAccountId: source,
       toAccountId: destination,
     };
+    const normalizedCustomer = transaction.customer.trim().toLocaleLowerCase();
+    const normalizedPhone = customerPhoneKey(transaction.phone);
+    const customerKey = customerPairKey(transaction.customer, transaction.phone);
+    const hasCustomerIdentity =
+      normalizedCustomer.length > 0 || normalizedPhone.length > 0;
+    const recentDuplicate =
+      !existingTransaction &&
+      hasCustomerIdentity &&
+      ledger.transactions.some((item) => {
+        const createdAt = transactionCreatedAt(item);
+        if (!createdAt) return false;
+        const age = now.getTime() - new Date(createdAt).getTime();
+        return (
+          age >= 0 &&
+          age <= 5 * 60 * 1000 &&
+          customerPairKey(item.customer, item.phone) === customerKey &&
+          item.amount === transaction.amount &&
+          item.commission === transaction.commission
+        );
+      });
+    if (
+      recentDuplicate &&
+      !window.confirm(
+        "A transaction with this exact customer, amount, and commission already exists. Do you want to proceed and keep it, or cancel?",
+      )
+    ) {
+      return false;
+    }
     const nextLedger: LedgerData = {
       ...ledger,
       transactions: editingTransactionId
@@ -1992,13 +2053,14 @@ function LedgerDashboard({
       transaction.customer,
       transaction.phone,
     );
-    if (!(await persistChanges(nextLedger, nextCustomers))) return;
+    if (!(await persistChanges(nextLedger, nextCustomers))) return false;
     setEditingTransactionId(null);
     setAmountInput("");
     setCommissionInput("");
     setCustomerInput("");
     setPhoneInput("");
     setNoteInput("");
+    return true;
   }
 
   function editTransaction(transaction: LedgerTransaction) {
@@ -3470,13 +3532,16 @@ function LedgerDashboard({
                       transferAccountError ||
                       !isOnline ||
                       isSaving ||
-                      transactionSubmitting
+                      transactionSubmitting ||
+                      transactionCooldown
                     }
                     type="submit"
                     className="flex h-9 items-center justify-center gap-2 rounded-[7px] bg-[#c6f36b] px-4 text-[10px] font-semibold text-[#244330] transition hover:bg-[#b5e659] disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     {transactionSubmitting ? (
                       <Loader2 size={14} className="animate-spin" />
+                    ) : transactionCooldown ? (
+                      <Check size={14} />
                     ) : editingTransactionId ? (
                       <Check size={14} />
                     ) : (
@@ -3484,9 +3549,11 @@ function LedgerDashboard({
                     )}
                     {transactionSubmitting
                       ? "Saving to cloud..."
-                      : editingTransactionId
-                        ? "Save changes"
-                        : "Add transaction"}
+                      : transactionCooldown
+                        ? "Saved — wait 10s"
+                        : editingTransactionId
+                          ? "Save changes"
+                          : "Add transaction"}
                   </button>
                   {editingTransactionId && (
                     <button
