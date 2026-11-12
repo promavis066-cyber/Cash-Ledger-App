@@ -58,7 +58,13 @@ async function fetchAllRows<T>(
 
 export type CustomerAnalyticsTransaction = Pick<
   LedgerTransaction,
-  "customer" | "phone" | "kind" | "amount" | "commission" | "date"
+  | "customer"
+  | "phone"
+  | "kind"
+  | "amount"
+  | "commission"
+  | "walletCommission"
+  | "date"
 >;
 
 function throwOnError(error: { message: string } | null) {
@@ -153,6 +159,8 @@ function parseAnalyticsTransaction(
     kind: value.kind,
     amount: Number(value.amount) || 0,
     commission: Number(value.commission) || 0,
+    walletCommission:
+      "walletCommission" in value ? Number(value.walletCommission) || 0 : 0,
   };
 }
 
@@ -165,7 +173,7 @@ export async function loadCustomerAnalyticsTransactions(
     let query = supabase
       .from("transactions")
       .select(
-        "customer_name, phone_number, kind, amount, commission, transaction_date",
+        "customer_name, phone_number, kind, amount, commission, transaction_date, data",
       )
       .eq("user_id", user.id)
       .order("created_at", { ascending: true })
@@ -203,6 +211,8 @@ export async function loadCustomerAnalyticsTransactions(
     kind: row.kind as LedgerTransaction["kind"],
     amount: Number(row.amount) || 0,
     commission: Number(row.commission) || 0,
+    walletCommission:
+      parseAnalyticsTransaction(row.data)?.walletCommission ?? 0,
   }));
 }
 

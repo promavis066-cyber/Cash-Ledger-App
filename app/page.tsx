@@ -459,6 +459,44 @@ function commissionAccountId(transaction: LedgerTransaction): AccountId {
   return transaction.commissionAccountId ?? "cash-drawer";
 }
 
+function walletCommissionAccountId(
+  transaction: LedgerTransaction,
+): AccountId {
+  return (
+    transaction.walletCommissionAccountId ??
+    (transaction.kind === "CASH_IN"
+      ? transaction.fromAccountId
+      : (transaction.toAccountId ?? transaction.fromAccountId))
+  );
+}
+
+function commissionContributions(
+  transaction: LedgerTransaction,
+): Array<{ accountId: AccountId; amount: number }> {
+  const contributions: Array<{ accountId: AccountId; amount: number }> = [];
+  if (transaction.commission > 0) {
+    contributions.push({
+      accountId: commissionAccountId(transaction),
+      amount: transaction.commission,
+    });
+  }
+  const walletCommission = Number(transaction.walletCommission || 0);
+  if (walletCommission > 0) {
+    contributions.push({
+      accountId: walletCommissionAccountId(transaction),
+      amount: walletCommission,
+    });
+  }
+  return contributions;
+}
+
+function totalCommission(transaction: LedgerTransaction): number {
+  return commissionContributions(transaction).reduce(
+    (total, contribution) => total + contribution.amount,
+    0,
+  );
+}
+
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -719,6 +757,9 @@ function LedgerDashboard({
   const [auditStackAmounts, setAuditStackAmounts] = useState<string[]>([""]);
   const [amountInput, setAmountInput] = useState("");
   const [commissionInput, setCommissionInput] = useState("");
+  const [walletCommissionEnabled, setWalletCommissionEnabled] =
+    useState(false);
+  const [walletCommissionInput, setWalletCommissionInput] = useState("0");
   const [customerInput, setCustomerInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [customerDirectory, setCustomerDirectory] = useState<
@@ -956,7 +997,7 @@ function LedgerDashboard({
     .reduce((total, [, amount]) => total + Number(amount || 0), 0);
   const totalOpeningBalance = openingBalance + digitalOpeningBalance;
   const todayCommission = todayTransactions.reduce(
-    (total, transaction) => total + Number(transaction.commission || 0),
+    (total, transaction) => total + totalCommission(transaction),
     0,
   );
   const systemClosing =
@@ -965,7 +1006,7 @@ function LedgerDashboard({
       0,
     ) ?? 0;
   const commissions = todayTransactions.reduce(
-    (total, transaction) => total + transaction.commission,
+    (total, transaction) => total + totalCommission(transaction),
     0,
   );
   const cashInTotal = todayTransactions
@@ -995,8 +1036,12 @@ function LedgerDashboard({
       : totalClosingBalance - Number(todaySession.closingBalance ?? 0);
   const closingCommissionBreakdown = Array.from(
     todayTransactions.reduce((map, transaction) => {
-      const channelId = transaction.commissionAccountId ?? "cash-drawer";
-      map.set(channelId, (map.get(channelId) ?? 0) + Number(transaction.commission || 0));
+      for (const contribution of commissionContributions(transaction)) {
+        map.set(
+          contribution.accountId,
+          (map.get(contribution.accountId) ?? 0) + contribution.amount,
+        );
+      }
       return map;
     }, new Map<AccountId, number>()),
   )
@@ -1062,18 +1107,16 @@ function LedgerDashboard({
             .filter((transaction) => transaction.fromAccountId === id)
             .reduce((sum, transaction) => sum + transaction.amount, 0);
           const commission = dayTransactions
-            .filter((transaction) => commissionAccountId(transaction) === id)
-            .reduce((sum, transaction) => sum + transaction.commission, 0);
-          const commissionCredit = dayTransactions
-            .filter((transaction) => commissionAccountId(transaction) === id)
-            .reduce((sum, transaction) => sum + transaction.commission, 0);
+            .flatMap(commissionContributions)
+            .filter((contribution) => contribution.accountId === id)
+            .reduce((sum, contribution) => sum + contribution.amount, 0);
           const system = closing[id] ?? 0;
           const ground = session.accountBalances.groundClosing[id] ?? null;
           return {
             date: session.date,
             accountId: id,
             opening: session.accountBalances.opening[id] ?? 0,
-            inflow: incoming + commissionCredit,
+            inflow: incoming + commission,
             outflow: outgoing,
             commission,
             systemClosing: system,
@@ -1115,7 +1158,7 @@ function LedgerDashboard({
     .filter((row) => row.date === dateTo)
     .reduce((sum, row) => sum + row.systemClosing, 0);
   const reportCommissions = filteredTransactions.reduce(
-    (total, transaction) => total + transaction.commission,
+    (total, transaction) => total + totalCommission(transaction),
     0,
   );
   const commissionReportDates = useMemo(() => {
@@ -1140,33 +1183,36 @@ function LedgerDashboard({
       commissionReportDates.start <= commissionReportDates.end
         ? ledger.transactions.filter(
             (transaction) =>
-              transaction.commission > 0 &&
               transaction.date >= commissionReportDates.start &&
-              transaction.date <= commissionReportDates.end,
+              transaction.date <= commissionReportDates.end &&
+              totalCommission(transaction) > 0,
           )
         : [],
     [commissionReportDates, ledger.transactions],
   );
   const commissionReportTotal = commissionReportTransactions.reduce(
-    (total, transaction) => total + transaction.commission,
+    (total, transaction) => total + totalCommission(transaction),
     0,
   );
   const commissionLocationRows = Array.from(
     commissionReportTransactions.reduce((groups, transaction) => {
-      const accountId = commissionAccountId(transaction);
-      const group = groups.get(accountId) ?? {
-        accountId,
-        transactionCount: 0,
-        total: 0,
-      };
-      group.transactionCount += 1;
-      group.total += transaction.commission;
-      groups.set(accountId, group);
+      for (const contribution of commissionContributions(transaction)) {
+        const group = groups.get(contribution.accountId) ?? {
+          accountId: contribution.accountId,
+          transactionIds: new Set<string>(),
+          total: 0,
+        };
+        group.transactionIds.add(transaction.id);
+        group.total += contribution.amount;
+        groups.set(contribution.accountId, group);
+      }
       return groups;
-    }, new Map<AccountId, { accountId: AccountId; transactionCount: number; total: number }>()),
+    }, new Map<AccountId, { accountId: AccountId; transactionIds: Set<string>; total: number }>()),
   )
     .map(([, group]) => ({
-      ...group,
+      accountId: group.accountId,
+      transactionCount: group.transactionIds.size,
+      total: group.total,
       account: ledger.accounts.find((account) => account.id === group.accountId),
     }))
     .sort((left, right) => right.total - left.total);
@@ -1288,7 +1334,8 @@ function LedgerDashboard({
       if (transaction.kind === "CASH_IN") ranking.cashIn += transaction.amount;
       if (transaction.kind === "CASH_OUT")
         ranking.cashOut += transaction.amount;
-      ranking.commission += transaction.commission;
+      ranking.commission +=
+        transaction.commission + Number(transaction.walletCommission || 0);
       byPair.set(key, ranking);
     }
     const all = Array.from(byPair.values());
@@ -1894,6 +1941,11 @@ function LedgerDashboard({
       transactionKind === "TRANSFER" || transactionKind === "EXPENSE"
         ? 0
         : parseCurrencyInput(commissionInput);
+    const walletCommission =
+      walletCommissionEnabled &&
+      (transactionKind === "CASH_IN" || transactionKind === "CASH_OUT")
+        ? parseCurrencyInput(walletCommissionInput)
+        : 0;
     if (!isOpen) {
       notify("Open or unlock this session before recording transactions.");
       return false;
@@ -1902,7 +1954,9 @@ function LedgerDashboard({
       !Number.isFinite(amount) ||
       amount <= 0 ||
       !Number.isFinite(commission) ||
-      commission < 0
+      commission < 0 ||
+      !Number.isFinite(walletCommission) ||
+      walletCommission < 0
     ) {
       return false;
     }
@@ -1932,6 +1986,14 @@ function LedgerDashboard({
       (selectedDestination && !activeIds.has(selectedDestination))
     ) {
       notify("Choose accounts that are active in today’s session.");
+      return false;
+    }
+    if (
+      walletCommission > 0 &&
+      ledger.accounts.find((account) => account.id === serviceAccountId)?.kind ===
+        "cash"
+    ) {
+      notify("Choose a digital wallet to receive the wallet commission.");
       return false;
     }
     const isCashIn = transactionKind === "CASH_IN";
@@ -2003,6 +2065,9 @@ function LedgerDashboard({
       commission,
       commissionAccountId: commissionDestination,
       commission_wallet_id: commissionDestination,
+      walletCommission,
+      walletCommissionAccountId:
+        walletCommission > 0 ? serviceAccountId : undefined,
       note: noteInput.trim(),
       fromAccountId: source,
       toAccountId: destination,
@@ -2024,13 +2089,14 @@ function LedgerDashboard({
           age <= 5 * 60 * 1000 &&
           customerPairKey(item.customer, item.phone) === customerKey &&
           item.amount === transaction.amount &&
-          item.commission === transaction.commission
+          item.commission === transaction.commission &&
+          Number(item.walletCommission || 0) === walletCommission
         );
       });
     if (
       recentDuplicate &&
       !window.confirm(
-        "A transaction with this exact customer, amount, and commission already exists. Do you want to proceed and keep it, or cancel?",
+        "A transaction with this exact customer, amount, shop fee, and wallet commission already exists. Do you want to proceed and keep it, or cancel?",
       )
     ) {
       return false;
@@ -2057,6 +2123,8 @@ function LedgerDashboard({
     setEditingTransactionId(null);
     setAmountInput("");
     setCommissionInput("");
+    setWalletCommissionEnabled(false);
+    setWalletCommissionInput("0");
     setCustomerInput("");
     setPhoneInput("");
     setNoteInput("");
@@ -2068,6 +2136,10 @@ function LedgerDashboard({
     setTransactionKind(transaction.kind);
     setAmountInput(formatCurrencyInputValue(String(transaction.amount)));
     setCommissionInput(formatCurrencyInputValue(String(transaction.commission)));
+    setWalletCommissionInput(
+      formatCurrencyInputValue(String(transaction.walletCommission || 0)),
+    );
+    setWalletCommissionEnabled(Number(transaction.walletCommission || 0) > 0);
     setCommissionDestinationId(
       transaction.commissionAccountId ?? "cash-drawer",
     );
@@ -2262,9 +2334,15 @@ function LedgerDashboard({
       Channel_or_Wallet: transactionParty(ledger.accounts, transaction),
       Amount_MMK: transaction.amount,
       Commission_MMK: transaction.commission,
+      Wallet_Commission_MMK: Number(transaction.walletCommission || 0),
+      Total_Commission_MMK: totalCommission(transaction),
       Commission_Received_In: accountName(
         ledger.accounts,
         commissionAccountId(transaction),
+      ),
+      Wallet_Commission_Received_In: accountName(
+        ledger.accounts,
+        walletCommissionAccountId(transaction),
       ),
       Note: transaction.note || "-",
     }));
@@ -2391,8 +2469,10 @@ function LedgerDashboard({
           "Customer",
           "Channel / wallet",
           "Amount",
-          "Fee",
+          "Shop fee",
+          "Wallet commission",
           "Fee deposited in",
+          "Wallet credited in",
         ],
       ],
       body: filteredTransactions.map((transaction) => [
@@ -2403,7 +2483,11 @@ function LedgerDashboard({
         transactionParty(ledger.accounts, transaction),
         formatMMK(transaction.amount),
         formatMMK(transaction.commission),
+        formatMMK(Number(transaction.walletCommission || 0)),
         accountName(ledger.accounts, commissionAccountId(transaction)),
+        Number(transaction.walletCommission || 0) > 0
+          ? accountName(ledger.accounts, walletCommissionAccountId(transaction))
+          : "-",
       ]),
       styles: { fontSize: 6.5, cellPadding: 1.8 },
       headStyles: { fillColor: [23, 60, 49] },
@@ -2427,7 +2511,7 @@ function LedgerDashboard({
     const walletRows = reportWalletRows
       .map(
         (row) =>
-          `<tr><td>${escapeHtml(row.account.name)} · net ${formatMMK(row.net)}</td><td class="amount">Fee ${formatMMK(row.commission)}</td></tr>`,
+          `<tr><td>${escapeHtml(row.account.name)} · net ${formatMMK(row.net)}</td><td class="amount">Commission ${formatMMK(row.commission)}</td></tr>`,
       )
       .join("");
     const transactionRows = filteredTransactions
@@ -2436,8 +2520,8 @@ function LedgerDashboard({
       <tr><td colspan="2" class="item">${escapeHtml(kindLabel(transaction.kind))} · ${escapeHtml(transaction.time)}</td></tr>
       <tr><td>${escapeHtml(transaction.date)} · ${escapeHtml(transaction.customer || "Walk-in")}</td><td class="amount">${formatMMK(transaction.amount)}</td></tr>
       <tr><td>${escapeHtml(transactionParty(ledger.accounts, transaction))}</td><td class="amount">Amount ${formatMMK(transaction.amount)}</td></tr>
-      <tr><td>Commission → ${escapeHtml(accountName(ledger.accounts, commissionAccountId(transaction)))}</td><td class="amount">${formatMMK(transaction.commission)}</td></tr>
-      ${transaction.commission ? `<tr><td class="muted">Commission</td><td class="amount">${formatMMK(transaction.commission)}</td></tr>` : ""}
+      ${transaction.commission ? `<tr><td>Shop fee → ${escapeHtml(accountName(ledger.accounts, commissionAccountId(transaction)))}</td><td class="amount">${formatMMK(transaction.commission)}</td></tr>` : ""}
+      ${Number(transaction.walletCommission || 0) > 0 ? `<tr><td>Wallet commission → ${escapeHtml(accountName(ledger.accounts, walletCommissionAccountId(transaction)))}</td><td class="amount">${formatMMK(Number(transaction.walletCommission || 0))}</td></tr>` : ""}
     `,
       )
       .join("");
@@ -3190,6 +3274,8 @@ function LedgerDashboard({
                           setTransactionKind(kind);
                           if (kind === "TRANSFER" || kind === "EXPENSE") {
                             setCommissionInput("");
+                            setWalletCommissionEnabled(false);
+                            setWalletCommissionInput("0");
                           }
                           if (kind === "EXPENSE") {
                             setCustomerInput("");
@@ -3229,7 +3315,7 @@ function LedgerDashboard({
                           }
                         >
                           {transactionAccounts
-                            .filter((account) => account.id !== "cash-drawer")
+                            .filter((account) => account.kind !== "cash")
                             .map((account) => (
                               <option key={account.id} value={account.id}>
                                 {account.name}
@@ -3337,23 +3423,83 @@ function LedgerDashboard({
                   </label>
                   {transactionKind !== "TRANSFER" &&
                     transactionKind !== "EXPENSE" && (
-                      <label className="field-label">
-                        Commission · MMK
-                        <span className="input-wrap">
-                          <input
-                            inputMode="decimal"
-                            type="text"
-                            placeholder="0"
-                            value={commissionInput}
-                            onChange={(event) =>
-                              updateCurrencyInput(
-                                event.currentTarget,
-                                setCommissionInput,
-                              )
-                            }
-                          />
-                        </span>
-                      </label>
+                      <div className="min-w-0 space-y-2">
+                        <label className="field-label">
+                          Commission · MMK
+                          <span className="input-wrap">
+                            <input
+                              inputMode="decimal"
+                              type="text"
+                              placeholder="0"
+                              value={commissionInput}
+                              onChange={(event) =>
+                                updateCurrencyInput(
+                                  event.currentTarget,
+                                  setCommissionInput,
+                                )
+                              }
+                            />
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-label="Wallet commission"
+                          aria-checked={walletCommissionEnabled}
+                          onClick={() => {
+                            const enabled = !walletCommissionEnabled;
+                            setWalletCommissionEnabled(enabled);
+                            if (!enabled) setWalletCommissionInput("0");
+                          }}
+                          className="flex items-center gap-2 text-left text-[9px] font-medium text-[#68766d]"
+                        >
+                          <span
+                            className={`relative inline-flex h-[18px] w-[32px] shrink-0 items-center rounded-full transition-colors duration-200 ${
+                              walletCommissionEnabled
+                                ? "bg-[#8bb36b]"
+                                : "bg-[#cbd3cb]"
+                            }`}
+                          >
+                            <span
+                              className={`absolute size-[14px] rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                                walletCommissionEnabled
+                                  ? "translate-x-[15px]"
+                                  : "translate-x-[2px]"
+                              }`}
+                            />
+                          </span>
+                          Wallet commission
+                        </button>
+                        <div
+                          aria-hidden={!walletCommissionEnabled}
+                          className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${
+                            walletCommissionEnabled
+                              ? "grid-rows-[1fr] opacity-100"
+                              : "grid-rows-[0fr] opacity-0"
+                          }`}
+                        >
+                          <div className="overflow-hidden">
+                            <label className="field-label">
+                              Wallet commission · MMK
+                              <span className="input-wrap">
+                                <input
+                                  disabled={!walletCommissionEnabled}
+                                  inputMode="decimal"
+                                  type="text"
+                                  placeholder="0"
+                                  value={walletCommissionInput}
+                                  onChange={(event) =>
+                                    updateCurrencyInput(
+                                      event.currentTarget,
+                                      setWalletCommissionInput,
+                                    )
+                                  }
+                                />
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
                     )}
                   {transactionKind !== "TRANSFER" &&
                     transactionKind !== "EXPENSE" &&
@@ -3562,6 +3708,8 @@ function LedgerDashboard({
                         setEditingTransactionId(null);
                         setAmountInput("");
                         setCommissionInput("");
+                        setWalletCommissionEnabled(false);
+                        setWalletCommissionInput("0");
                         setCustomerInput("");
                         setPhoneInput("");
                         setNoteInput("");
@@ -3705,17 +3853,44 @@ function LedgerDashboard({
                           <p className="number-font m-0 text-[10px] font-semibold">
                             {formatMMK(transaction.amount)}
                           </p>
-                          {transaction.commission > 0 && (
+                          {(transaction.commission > 0 ||
+                            Number(transaction.walletCommission || 0) > 0) && (
                             <>
-                              <p className="number-font mb-0 mt-1 text-[8px] text-[#71816f]">
-                                Fee {formatMMK(transaction.commission)}
-                              </p>
-                              <p className="mb-0 mt-0.5 whitespace-nowrap text-[8px] text-[#89948c]">
-                                In {accountName(
-                                  ledger.accounts,
-                                  commissionAccountId(transaction),
+                              <div className="mt-1 flex flex-wrap justify-end gap-1">
+                                {transaction.commission > 0 && (
+                                  <span className="number-font rounded-[5px] bg-[#f0f5eb] px-1.5 py-0.5 text-[8px] text-[#71816f]">
+                                    Fee {formatMMK(transaction.commission)}
+                                  </span>
                                 )}
-                              </p>
+                                {Number(transaction.walletCommission || 0) >
+                                  0 && (
+                                  <span className="number-font whitespace-nowrap rounded-[5px] bg-[#edf5f5] px-1.5 py-0.5 text-[8px] text-[#527777]">
+                                    Wallet Comm: +
+                                    {formatMMK(
+                                      Number(transaction.walletCommission || 0),
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                              {transaction.commission > 0 && (
+                                <p className="mb-0 mt-0.5 whitespace-nowrap text-[8px] text-[#89948c]">
+                                  Fee in{" "}
+                                  {accountName(
+                                    ledger.accounts,
+                                    commissionAccountId(transaction),
+                                  )}
+                                </p>
+                              )}
+                              {Number(transaction.walletCommission || 0) >
+                                0 && (
+                                <p className="mb-0 mt-0.5 whitespace-nowrap text-[8px] text-[#89948c]">
+                                  Wallet in{" "}
+                                  {accountName(
+                                    ledger.accounts,
+                                    walletCommissionAccountId(transaction),
+                                  )}
+                                </p>
+                              )}
                             </>
                           )}
                         </div>
@@ -4541,14 +4716,16 @@ function LedgerDashboard({
                       </h4>
                     </div>
                     <div className="table-scroll">
-                      <table className="w-full min-w-[700px] border-collapse text-left">
+                      <table className="w-full min-w-[900px] border-collapse text-left">
                         <thead>
                           <tr className="border-b border-[#edf0ec] text-[8px] font-semibold uppercase tracking-[.6px] text-[#929d95]">
                             <th className="px-3 py-2">Date &amp; time</th>
                             <th className="px-3 py-2">Customer / type</th>
                             <th className="px-3 py-2 text-right">Amount</th>
-                            <th className="px-3 py-2 text-right">Commission</th>
-                            <th className="px-3 py-2">Received in</th>
+                            <th className="px-3 py-2 text-right">Shop fee</th>
+                            <th className="px-3 py-2 text-right">Wallet commission</th>
+                            <th className="px-3 py-2">Fee received in</th>
+                            <th className="px-3 py-2">Wallet credited in</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -4556,6 +4733,10 @@ function LedgerDashboard({
                             const location = ledger.accounts.find(
                               (account) =>
                                 account.id === commissionAccountId(transaction),
+                            );
+                            const walletLocation = ledger.accounts.find(
+                              (account) =>
+                                account.id === walletCommissionAccountId(transaction),
                             );
                             return (
                               <tr
@@ -4584,18 +4765,37 @@ function LedgerDashboard({
                                 <td className="number-font px-3 py-2 text-right text-[9px] font-semibold text-[#4c7540]">
                                   {formatMMK(transaction.commission)} MMK
                                 </td>
+                                <td className="number-font px-3 py-2 text-right text-[9px] font-semibold text-[#527777]">
+                                  {formatMMK(
+                                    Number(transaction.walletCommission || 0),
+                                  )}{" "}
+                                  MMK
+                                </td>
                                 <td className="px-3 py-2">
-                                  <span
-                                    className={`inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-medium ${
-                                      location?.kind === "cash" ||
-                                      commissionAccountId(transaction) ===
-                                        "cash-drawer"
-                                        ? "bg-[#e6f4cf] text-[#52733b]"
-                                        : "bg-[#e8f1f7] text-[#4d728a]"
-                                    }`}
-                                  >
-                                    In {location?.shortName ?? "Cash Drawer"}
-                                  </span>
+                                  {transaction.commission > 0 ? (
+                                    <span
+                                      className={`inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-medium ${
+                                        location?.kind === "cash" ||
+                                        commissionAccountId(transaction) ===
+                                          "cash-drawer"
+                                          ? "bg-[#e6f4cf] text-[#52733b]"
+                                          : "bg-[#e8f1f7] text-[#4d728a]"
+                                      }`}
+                                    >
+                                      In {location?.shortName ?? "Cash Drawer"}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8px] text-[#a0aaa2]">—</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {Number(transaction.walletCommission || 0) > 0 ? (
+                                    <span className="inline-flex rounded-full bg-[#edf5f5] px-1.5 py-0.5 text-[8px] font-medium text-[#527777]">
+                                      In {walletLocation?.shortName ?? "Selected wallet"}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8px] text-[#a0aaa2]">—</span>
+                                  )}
                                 </td>
                               </tr>
                             );
@@ -4924,19 +5124,47 @@ function LedgerDashboard({
                             </span>
                           </td>
                           <td className="number-font px-4 py-3 text-right text-[10px] text-[#66736a]">
-                            {transaction.commission ? (
+                            {transaction.commission > 0 ||
+                            Number(transaction.walletCommission || 0) > 0 ? (
                               <span className="inline-flex flex-col items-end gap-1">
-                                <span>{formatMMK(transaction.commission)}</span>
-                                <AccountBadge
-                                  account={
-                                    ledger.accounts.find(
-                                      (account) =>
-                                        account.id ===
-                                        commissionAccountId(transaction),
-                                    ) ?? ledger.accounts[0]
-                                  }
-                                  compact
-                                />
+                                {transaction.commission > 0 && (
+                                  <>
+                                    <span>
+                                      Fee {formatMMK(transaction.commission)}
+                                    </span>
+                                    <AccountBadge
+                                      account={
+                                        ledger.accounts.find(
+                                          (account) =>
+                                            account.id ===
+                                            commissionAccountId(transaction),
+                                        ) ?? ledger.accounts[0]
+                                      }
+                                      compact
+                                    />
+                                  </>
+                                )}
+                                {Number(transaction.walletCommission || 0) >
+                                  0 && (
+                                  <>
+                                    <span className="text-[#527777]">
+                                      Wallet Comm: +
+                                      {formatMMK(
+                                        Number(transaction.walletCommission || 0),
+                                      )}
+                                    </span>
+                                    <AccountBadge
+                                      account={
+                                        ledger.accounts.find(
+                                          (account) =>
+                                            account.id ===
+                                            walletCommissionAccountId(transaction),
+                                        ) ?? ledger.accounts[0]
+                                      }
+                                      compact
+                                    />
+                                  </>
+                                )}
                               </span>
                             ) : (
                               "—"

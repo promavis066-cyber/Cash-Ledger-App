@@ -58,7 +58,9 @@ export interface LedgerTransaction {
   phone: string;
   amount: number;
   commission: number;
+  walletCommission?: number;
   commissionAccountId?: AccountId;
+  walletCommissionAccountId?: AccountId;
   commission_wallet?: string;
   commission_wallet_id?: string;
   commissionReceivedIn?: string;
@@ -351,6 +353,21 @@ export function computeAccountBalances(
       transaction.commissionAccountId ?? "cash-drawer";
     if (activeIds.has(commissionAccountId))
       balances[commissionAccountId] += transaction.commission;
+    const walletCommissionAccountId =
+      transaction.walletCommissionAccountId ??
+      (transaction.kind === "CASH_IN"
+        ? transaction.fromAccountId
+        : (transaction.toAccountId ?? transaction.fromAccountId));
+    if (
+      walletCommissionAccountId !== "cash-drawer" &&
+      activeIds.has(walletCommissionAccountId) &&
+      accountList.find((account) => account.id === walletCommissionAccountId)
+        ?.kind !== "cash"
+    ) {
+      balances[walletCommissionAccountId] += Number(
+        transaction.walletCommission || 0,
+      );
+    }
   }
 
   return balances;
